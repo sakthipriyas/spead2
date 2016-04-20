@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <cassert>
+#include <mutex>
 #include "recv_reader.h"
 #include "recv_mem.h"
 #include "recv_stream.h"
@@ -35,7 +36,8 @@ mem_reader::mem_reader(
     : reader(owner), ptr(ptr), length(length)
 {
     assert(ptr != nullptr);
-    get_stream().get_strand().post([this] {
+    get_io_service().post([this] {
+        std::lock_guard<std::mutex> lock(get_stream_mutex());
         mem_to_stream(get_stream_base(), this->ptr, this->length);
         // There will be no more data, so we can stop the stream immediately.
         get_stream_base().stop_received();

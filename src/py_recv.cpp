@@ -176,7 +176,7 @@ private:
         else
         {
             using boost::asio::ip::udp;
-            udp::resolver resolver(get_strand().get_io_service());
+            udp::resolver resolver(get_io_service());
             udp::resolver::query query(hostname, "", udp::resolver::query::passive);
             return resolver.resolve(query)->endpoint().address();
         }
@@ -266,7 +266,7 @@ public:
         else
         {
             boost::asio::ip::udp::socket asio_socket(
-                get_strand().get_io_service(), endpoint.protocol(), fd2);
+                get_io_service(), endpoint.protocol(), fd2);
             emplace_reader<udp_reader>(std::move(asio_socket), endpoint, max_size, buffer_size);
         }
     }

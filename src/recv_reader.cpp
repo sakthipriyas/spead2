@@ -33,12 +33,17 @@ void reader::stopped()
 
 boost::asio::io_service &reader::get_io_service()
 {
-    return owner.get_strand().get_io_service();
+    return owner.get_io_service();
 }
 
 stream_base &reader::get_stream_base() const
 {
     return owner;
+}
+
+std::mutex &reader::get_stream_mutex() const
+{
+    return owner.mutex;
 }
 
 void reader::join()

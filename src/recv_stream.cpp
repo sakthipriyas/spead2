@@ -169,7 +169,7 @@ void stream_base::stop_received()
 
 
 stream::stream(boost::asio::io_service &io_service, bug_compat_mask bug_compat, std::size_t max_heaps)
-    : stream_base(bug_compat, max_heaps), strand(io_service)
+    : stream_base(bug_compat, max_heaps), io_service(io_service)
 {
 }
 
@@ -191,20 +191,27 @@ void stream::stop_received()
 
 void stream::stop_impl()
 {
-    run_in_strand([this] { stop_received(); });
+    std::unique_lock<std::mutex> lock(mutex);
+    stop_received();
 
     /* Block until all readers have entered their final completion handler.
-     * Note that this cannot conflict with a previously issued emplace_reader,
-     * because its emplace_reader_callback either happens-before the
-     * stop_received call above or sees that the stream has been stopped and
-     * does not touch the readers list.
+     * Note that this cannot conflict with simultaneous emplace_reader,
+     * because it either happens-before the stop_received call above or sees
+     * that the stream has been stopped and does not touch the readers list.
+     * Thus, common_lock is not needed. It's also important not to lock it,
+     * because a reader might be about to take common_lock and not be
+     * joinable until after it gets it.
      */
+    lock.unlock();
     for (const auto &r : readers)
         r->join();
 
-    // Destroy the readers with the strand held, to ensure that the
-    // completion handlers have actually returned.
-    run_in_strand([this] { readers.clear(); });
+    /* join might return while common_lock is still held by the reader.
+     * Lock it here to ensure we wait for the reader to complete its
+     * critical section.
+     */
+    lock.lock();
+    readers.clear();
 }
 
 void stream::stop()

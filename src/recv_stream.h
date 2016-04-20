@@ -22,11 +22,9 @@
 #define SPEAD2_RECV_STREAM_H
 
 #include <cstddef>
-#include <deque>
 #include <memory>
 #include <utility>
 #include <functional>
-#include <future>
 #include <mutex>
 #include <atomic>
 #include <type_traits>
@@ -55,7 +53,7 @@ struct packet_header;
  * and passed to @ref heap_ready when
  * - They are known to be complete (a heap length header is present and all the
  *   corresponding payload has been received); or
- * - Too many heaps are live: the one with the lowest ID is aged out, even if
+ * - Too many heaps are live: the one seen the earliest is aged out, even if
  *   incomplete
  * - The stream is stopped
  *
@@ -65,10 +63,10 @@ struct packet_header;
  * @internal
  *
  * The live heaps are stored in a circular queue (this has fewer pointer
- * indirections than @c std::deque). The heap cnts stored in another circular
- * queue with the same indexing. The heap cnt queue is redundant, but having a
- * separate queue of heap cnts reduces the number of cache lines touched to
- * find the right heap.
+ * indirections than @c std::deque). The heap cnts are stored in another
+ * circular queue with the same indexing. The heap cnt queue is redundant, but
+ * having a separate queue of heap cnts reduces the number of cache lines
+ * touched to find the right heap.
  *
  * When a heap is removed from the circular queue, the queue is not shifted
  * up. Instead, a hole is left. The queue thus only needs a head and not a
@@ -109,7 +107,7 @@ private:
      * Memory pool used by heaps.
      *
      * This is protected by pool_mutex. C++11 mandates free @c atomic_load and
-     * @c atomic_store on @c shared_ptr, but GCC 4.8 doesn't implement it. Also,
+     * @c atomic_store on @c shared_ptr, but GCC 4.8 doesn't implement it. Also
      * std::atomic<std::shared_ptr<T>> causes undefined symbol errors.
      */
     std::shared_ptr<memory_pool> pool;
@@ -132,9 +130,7 @@ public:
     explicit stream_base(bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
     virtual ~stream_base();
 
-    /**
-     * Set a pool to use for allocating heap memory.
-     */
+    /// Set a pool to use for allocating heap memory.
     void set_memory_pool(std::shared_ptr<memory_pool> pool);
 
     /// Set an alternative memcpy function for copying heap payload
@@ -162,7 +158,6 @@ public:
      */
     virtual void stop_received();
 
-    // TODO: not thread-safe: needs to query via the strand
     bool is_stopped() const { return stopped; }
 
     bug_compat_mask get_bug_compat() const { return bug_compat; }
@@ -172,26 +167,28 @@ public:
 };
 
 /**
- * Stream that is fed by subclasses of @ref reader. Unless otherwise specified,
- * methods in @ref stream_base may only be called while holding the strand
- * contained in this class. The public interface functions must be called
- * from outside the strand (and outside the threads associated with the
- * io_service), but are not thread-safe relative to each other.
+ * Stream that is fed by subclasses of @ref reader. Unlike @ref stream_base, it
+ * is thread-safe, using a mutex to protect concurrent access.
  *
- * This class is thread-safe. This is achieved mostly by having operations run
- * as completion handlers on a strand. The exception is @ref stop, which uses a
- * @c once to ensure that only the first call actually runs.
+ * Readers may call functions from the base class directly. Unless otherwise
+ * stated, they must hold the mutex to do so.
  */
 class stream : protected stream_base
 {
-private:
     friend class reader;
     friend class bypass_reader;
-
+private:
     /**
-     * Serialization of access.
+     * Serialization of access. It does not apply to @c memcpy and @c pool in
+     * the base class, which have their own serialization.
      */
-    boost::asio::io_service::strand strand;
+    std::mutex mutex;
+    /**
+     * io_service provided for readers.
+     *
+     * @todo Eliminate this, pass directly to readers' constructor.
+     */
+    boost::asio::io_service &io_service;
     /**
      * Readers providing the stream data.
      */
@@ -200,53 +197,16 @@ private:
     /// Ensure that @ref stop is only run once
     std::once_flag stop_once;
 
-    template<typename T, typename... Args>
-    void emplace_reader_callback(Args&&... args)
-    {
-        if (!is_stopped())
-        {
-            readers.reserve(readers.size() + 1);
-            reader *r = new T(*this, std::forward<Args>(args)...);
-            std::unique_ptr<reader> ptr(r);
-            readers.push_back(std::move(ptr));
-        }
-    }
-
     /* Prevent moving (copying is already impossible). Moving is not safe
      * because readers refer back to *this (it could potentially be added if
      * there is a good reason for it, but it would require adding a new
-     * function to the reader interface.
+     * function to the reader interface).
      */
     stream(stream_base &&) = delete;
     stream &operator=(stream_base &&) = delete;
 
 protected:
     virtual void stop_received() override;
-
-    /**
-     * Schedule execution of the function object @a callback through the @c
-     * io_service using the strand, and block until it completes. If the
-     * function throws an exception, it is rethrown in this thread.
-     */
-    template<typename F>
-    typename std::result_of<F()>::type run_in_strand(F &&func)
-    {
-        typedef typename std::result_of<F()>::type return_type;
-        std::packaged_task<return_type()> task(std::forward<F>(func));
-        auto future = task.get_future();
-        get_strand().dispatch([&task]
-        {
-            /* This is subtle: task lives on the run_in_strand stack frame, so
-             * we have to be very careful not to touch it after that function
-             * exits. Calling task() directly can continue to touch task even
-             * after it has unblocked the future. But the move constructor for
-             * packaged_task will take over the shared state for the future.
-             */
-            std::packaged_task<return_type()> my_task(std::move(task));
-            my_task();
-        });
-        return future.get();
-    }
 
     /// Actual implementation of @ref stop
     void stop_impl();
@@ -257,7 +217,7 @@ public:
     using stream_base::set_memory_pool;
     using stream_base::set_memcpy;
 
-    boost::asio::io_service::strand &get_strand() { return strand; }
+    boost::asio::io_service &get_io_service() const { return io_service; }
 
     explicit stream(boost::asio::io_service &service, bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
     explicit stream(thread_pool &pool, bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
@@ -270,12 +230,14 @@ public:
     template<typename T, typename... Args>
     void emplace_reader(Args&&... args)
     {
-        // This would probably work better with a lambda (better forwarding),
-        // but GCC 4.8 has a bug with accessing parameter packs inside a
-        // lambda.
-        run_in_strand(detail::reference_bind(
-                std::mem_fn(&stream::emplace_reader_callback<T, Args&&...>),
-                this, std::forward<Args>(args)...));
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!is_stopped())
+        {
+            readers.reserve(readers.size() + 1);
+            reader *r = new T(*this, std::forward<Args>(args)...);
+            std::unique_ptr<reader> ptr(r);
+            readers.push_back(std::move(ptr));
+        }
     }
 
     /**
@@ -284,7 +246,8 @@ public:
      * in the thread pool.
      *
      * In most cases subclasses should override @ref stop_received rather than
-     * this function.
+     * this function. However, if @ref heap_ready or @ref stop_received can
+     * block, then this function must be overridden to interrupt the block.
      */
     virtual void stop();
 };

@@ -217,7 +217,7 @@ template<typename Ringbuffer>
 void ring_stream<Ringbuffer>::stop()
 {
     /* Make sure the ringbuffer is stopped *before* the base implementation
-     * takes the strand. Without this, a heap_ready call could be blocking the
+     * takes the mutex. Without this, a heap_ready call could be blocking the
      * strand, waiting for space in the ring buffer. This will call the
      * heap_ready call to abort, allowing the strand to be accessed for the
      * rest of the shutdown.

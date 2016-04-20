@@ -31,6 +31,7 @@
 #include <functional>
 #include <boost/asio.hpp>
 #include <iostream>
+#include <mutex>
 #include "recv_reader.h"
 #include "recv_udp.h"
 #include "common_logging.h"
@@ -147,7 +148,7 @@ udp_reader::udp_reader(
     std::size_t buffer_size)
     : udp_reader(
         owner,
-        make_socket(owner.get_strand().get_io_service(), endpoint),
+        make_socket(owner.get_io_service(), endpoint),
         endpoint, max_size, buffer_size)
 {
 }
@@ -160,7 +161,7 @@ udp_reader::udp_reader(
     const boost::asio::ip::address &interface_address)
     : udp_reader(
         owner,
-        make_multicast_v4_socket(owner.get_strand().get_io_service(), endpoint, interface_address),
+        make_multicast_v4_socket(owner.get_io_service(), endpoint, interface_address),
         endpoint, max_size, buffer_size)
 {
 }
@@ -173,7 +174,7 @@ udp_reader::udp_reader(
     unsigned int interface_index)
     : udp_reader(
         owner,
-        make_multicast_v6_socket(owner.get_strand().get_io_service(), endpoint, interface_index),
+        make_multicast_v6_socket(owner.get_io_service(), endpoint, interface_index),
         endpoint, max_size, buffer_size)
 {
 }
@@ -210,6 +211,7 @@ void udp_reader::packet_handler(
     const boost::system::error_code &error,
     std::size_t bytes_transferred)
 {
+    std::lock_guard<std::mutex> lock(get_stream_mutex());
     if (!error)
     {
         if (get_stream_base().is_stopped())
@@ -258,7 +260,7 @@ void udp_reader::enqueue_receive()
         boost::asio::buffer(buffer.get(), max_size + 1),
 #endif
         endpoint,
-        get_stream().get_strand().wrap(std::bind(&udp_reader::packet_handler, this, _1, _2)));
+        std::bind(&udp_reader::packet_handler, this, _1, _2));
 }
 
 void udp_reader::stop()

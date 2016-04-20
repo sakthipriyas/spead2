@@ -23,6 +23,7 @@
 
 #include <boost/asio.hpp>
 #include <future>
+#include <mutex>
 
 namespace spead2
 {
@@ -37,10 +38,10 @@ class stream_base;
  * a stream. Subclasses will usually override @ref stop.
  *
  * The lifecycle of a reader is:
- * - construction (strand held)
- * - stop (strand held)
- * - join (strand not held)
- * - destruction (strand held)
+ * - construction (stream mutex held)
+ * - stop (stream mutex held)
+ * - join (stream mutex not held)
+ * - destruction (stream mutex held)
  */
 class reader
 {
@@ -61,24 +62,28 @@ public:
 
     /**
      * Retrieve the wrapped stream's base class. This must only be used when
-     * the stream's strand is held.
+     * the stream's mutex is held.
      */
     stream_base &get_stream_base() const;
+
+    /**
+     * Retrieve the wrapped stream's @c reader_mutex.
+     */
+    std::mutex &get_stream_mutex() const;
 
     /// Retrieve the io_service corresponding to the owner
     boost::asio::io_service &get_io_service();
 
     /**
      * Cancel any pending asynchronous operations. This is called with the
-     * owner's strand held. This function does not need to wait for
-     * completion handlers to run, but if there are any, the destructor must
-     * wait for them.
+     * owner's mutex held. This function does not need to wait for
+     * completion handlers to run.
      */
     virtual void stop() = 0;
 
     /**
      * Block until @ref stopped has been called by the last completion
-     * handler. This function is called outside the strand.
+     * handler. This function is called without the mutex held.
      */
     void join();
 };

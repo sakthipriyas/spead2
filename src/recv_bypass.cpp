@@ -158,22 +158,20 @@ void bypass_reader::stop()
 
 void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
 {
-    get_stream().run_in_strand([this, data, length]
+    packet_header packet;
+    std::size_t size = decode_packet(packet, data, length);
+    if (size == length)
     {
-        packet_header packet;
-        std::size_t size = decode_packet(packet, data, length);
-        if (size == length)
-        {
-            get_stream_base().add_packet(packet);
-            if (get_stream_base().is_stopped())
-                log_debug("netmap_udp_reader: end of stream detected");
-        }
-        else if (size != 0)
-        {
-            log_info("discarding packet due to size mismatch (%1% != %2%)",
-                     size, length);
-        }
-    });
+        std::lock_guard<std::mutex> lock(get_stream_mutex());
+        get_stream_base().add_packet(packet);
+        if (get_stream_base().is_stopped())
+            log_debug("netmap_udp_reader: end of stream detected");
+    }
+    else if (size != 0)
+    {
+        log_info("discarding packet due to size mismatch (%1% != %2%)",
+                 size, length);
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////
