@@ -20,24 +20,23 @@
  * Support for netmap.
  */
 
-#ifndef SPEAD2_RECV_NETMAP_UDP_READER_H
-#define SPEAD2_RECV_NETMAP_UDP_READER_H
+#ifndef SPEAD2_RECV_NETMAP_H
+#define SPEAD2_RECV_NETMAP_H
 
 #if SPEAD2_USE_NETMAP
 
 #define NETMAP_WITH_LIBS
 #include <cstdint>
 #include <string>
+#include <atomic>
 #include <boost/asio.hpp>
 #include <net/netmap_user.h>
-#include "recv_reader.h"
-#include "recv_stream.h"
+#include "recv_bypass.h"
 
 namespace spead2
 {
 namespace recv
 {
-
 namespace detail
 {
 
@@ -47,40 +46,24 @@ public:
     void operator()(nm_desc *) const;
 };
 
-} // namespace detail
-
-class netmap_udp_reader : public reader
+class bypass_service_netmap : public bypass_service
 {
 private:
-    /// File handle for the netmap mapping, usable with asio
-    boost::asio::posix::stream_descriptor handle;
-    /// Information about the netmap mapping
-    std::unique_ptr<nm_desc, detail::nm_desc_destructor> desc;
-    /// UDP ports to listen on, in network byte order
-    uint16_t port_be;
+    std::unique_ptr<nm_desc, nm_desc_destructor> desc;
+    std::atomic<bool> stop;
+    std::future<void> run_future;
 
-    /// Start an asynchronous receive
-    void enqueue_receive();
-
-    /// Callback on completion of asynchronous notification
-    void packet_handler(const boost::system::error_code &error);
+    void run();
 
 public:
-    /**
-     * Constructor.
-     *
-     * @param owner        Owning stream
-     * @param device       Name of the network interface e.g., @c eth0
-     * @param port         UDP port number to listen to
-     */
-    netmap_udp_reader(stream &owner, const std::string &device, uint16_t port);
-
-    virtual void stop() override;
+    bypass_service_netmap(const std::string &interface);
+    virtual ~bypass_service_netmap() override;
 };
 
+} // namespace detail
 } // namespace recv
 } // namespace spead2
 
 #endif // SPEAD2_USE_NETMAP
 
-#endif // SPEAD2_RECV_NETMAP_UDP_READER_H
+#endif // SPEAD2_RECV_NETMAP_H

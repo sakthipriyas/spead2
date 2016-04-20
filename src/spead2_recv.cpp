@@ -27,9 +27,7 @@
 #include <boost/lexical_cast.hpp>
 #include "common_thread_pool.h"
 #include "recv_udp.h"
-#if SPEAD2_USE_NETMAP
-# include "recv_netmap.h"
-#endif
+#include "recv_bypass.h"
 #include "recv_heap.h"
 #include "recv_live_heap.h"
 #include "recv_ring_stream.h"
@@ -273,8 +271,8 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
 #if SPEAD2_USE_NETMAP
         if (opts.netmap_if != "")
         {
-            stream->emplace_reader<spead2::recv::netmap_udp_reader>(
-                opts.netmap_if, endpoint.port());
+            stream->emplace_reader<spead2::recv::bypass_reader>(
+                "netmap", opts.netmap_if, endpoint);
         }
         else
 #endif

@@ -186,6 +186,7 @@ class stream : protected stream_base
 {
 private:
     friend class reader;
+    friend class bypass_reader;
 
     /**
      * Serialization of access.
