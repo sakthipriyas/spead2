@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include "recv_udp.h"
 #include "recv_mem.h"
+#include "recv_bypass.h"
 #include "recv_stream.h"
 #include "recv_ring_stream.h"
 #include "recv_live_heap.h"
@@ -295,6 +296,17 @@ public:
         emplace_reader<udp_reader>(endpoint, max_size, buffer_size, interface_index);
     }
 
+    void add_bypass_reader(
+        const std::string &type,
+        const std::string &interface,
+        std::uint16_t port,
+        const std::string &bind_hostname = "")
+    {
+        release_gil gil;
+        auto endpoint = make_endpoint(bind_hostname, port);
+        emplace_reader<bypass_reader>(type, interface, endpoint);
+    }
+
     void stop()
     {
         release_gil gil;
@@ -373,6 +385,12 @@ void register_module()
               arg("max_size") = udp_reader::default_max_size,
               arg("buffer_size") = udp_reader::default_buffer_size,
               arg("interface_index") = (unsigned int) 0))
+        .def("add_bypass_reader", &ring_stream_wrapper::add_bypass_reader,
+             (
+              arg("type"),
+              arg("interface"),
+              arg("port"),
+              arg("bind_hostname") = std::string()))
         .def("stop", &ring_stream_wrapper::stop)
         .add_property("fd", &ring_stream_wrapper::get_fd)
         .def_readonly("DEFAULT_MAX_HEAPS", ring_stream_wrapper::default_max_heaps)
