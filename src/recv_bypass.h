@@ -31,6 +31,7 @@
 #ifndef SPEAD2_RECV_BYPASS_H
 #define SPEAD2_RECV_BYPASS_H
 
+#include <vector>
 #include <string>
 #include <utility>
 #include <memory>
@@ -116,6 +117,9 @@ public:
 
     virtual void stop() override;
 };
+
+/// Obtain a list of names of compiled-in bypass types.
+std::vector<std::string> bypass_types();
 
 } // namespace recv
 } // namespace spead2

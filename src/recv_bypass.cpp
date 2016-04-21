@@ -24,6 +24,7 @@
 #include <functional>
 #include <cassert>
 #include <cstdint>
+#include <algorithm>
 #include <unordered_map>
 #include <mutex>
 #include <arpa/inet.h>
@@ -201,15 +202,15 @@ public:
     }
 };
 
+static std::unordered_map<std::string, std::shared_ptr<bypass_service_type>> service_types
+{
+#if SPEAD2_USE_NETMAP
+    std::make_pair(std::string("netmap"), std::make_shared<bypass_service_type_inst<bypass_service_netmap>>()),
+#endif
+};
+
 std::shared_ptr<bypass_service> bypass_service::get_instance(const std::string &type, const std::string &interface)
 {
-    static std::unordered_map<std::string, std::shared_ptr<bypass_service_type>> service_types
-    {
-#if SPEAD2_USE_NETMAP
-        std::make_pair(std::string("netmap"), std::make_shared<bypass_service_type_inst<bypass_service_netmap>>()),
-#endif
-    };
-
     auto inst = service_types.find(type);
     if (inst == service_types.end())
     {
@@ -236,6 +237,15 @@ std::shared_ptr<bypass_service> bypass_service::get_instance(const std::string &
 }
 
 } // namespace detail
+
+std::vector<std::string> bypass_types()
+{
+    std::vector<std::string> ans;
+    for (const auto &type : detail::service_types)
+        ans.push_back(type.first);
+    std::sort(ans.begin(), ans.end());
+    return ans;
+}
 
 } // namespace recv
 } // namespace spead2

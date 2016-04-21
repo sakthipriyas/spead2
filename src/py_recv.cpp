@@ -319,6 +319,15 @@ public:
     }
 };
 
+static py::list bypass_types_wrapper()
+{
+    py::list ans;
+    std::vector<std::string> types = bypass_types();
+    for (const std::string &type : types)
+        ans.append(type);
+    return ans;
+}
+
 /// Register the receiver module with Boost.Python
 void register_module()
 {
@@ -397,6 +406,8 @@ void register_module()
         .def_readonly("DEFAULT_RING_HEAPS", ring_stream_wrapper::default_ring_heaps)
         .def_readonly("DEFAULT_UDP_MAX_SIZE", udp_reader::default_max_size)
         .def_readonly("DEFAULT_UDP_BUFFER_SIZE", udp_reader::default_buffer_size);
+
+    def("bypass_types", bypass_types_wrapper);
 }
 
 } // namespace recv

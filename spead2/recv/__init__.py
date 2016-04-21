@@ -57,3 +57,6 @@ bytes, in the order they appeared in the original packet.
 """
 
 from spead2._recv import Stream, Heap
+from spead2._recv import bypass_types as _bypass_types
+
+BYPASS_TYPES = _bypass_types()
