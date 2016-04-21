@@ -16,6 +16,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext as _build_ext
 import glob
 import sys
 import os
@@ -35,6 +36,22 @@ def find_version():
         code = f.read()
     exec(code, globals_)
     return globals_['__version__']
+
+class build_ext(_build_ext):
+    user_options = _build_ext.user_options + [
+        ('with-netmap', None, 'Build with netmap support')
+    ]
+
+    def initialize_options(self):
+        _build_ext.initialize_options(self)
+        self.with_netmap = 0
+
+    def finalize_options(self):
+        _build_ext.finalize_options(self)
+        if self.with_netmap:
+            for ext in self.extensions:
+                ext.define_macros.append(('SPEAD2_USE_NETMAP', '1'))
+
 
 # Can't actually install on readthedocs.org because Boost.Python is missing,
 # but we need setup.py to still be successful to make the doc build work.
@@ -86,6 +103,7 @@ setup(
         'Programming Language :: Python :: 3',
         'Topic :: Software Development :: Libraries',
         'Topic :: System :: Networking'],
+    cmdclass={'build_ext': build_ext},
     ext_package='spead2',
     ext_modules=extensions,
     setup_requires=['numpy'],
