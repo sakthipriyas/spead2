@@ -35,7 +35,6 @@
 #include <utility>
 #include <memory>
 #include <map>
-#include <future>
 #include <cstdint>
 #include <cstddef>
 #include <boost/asio.hpp>
@@ -68,7 +67,6 @@ private:
 
 protected:
     std::mutex mutex;
-    std::future<void> run_future;
 
     /**
      * Process a single packet. The caller must hold the mutex when calling this.
