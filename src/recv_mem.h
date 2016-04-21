@@ -52,6 +52,7 @@ public:
                const std::uint8_t *ptr, std::size_t length);
 
     virtual void stop() override {}
+    virtual void join() override {}
 };
 
 } // namespace recv

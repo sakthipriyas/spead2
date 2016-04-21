@@ -47,11 +47,6 @@ class reader
 {
 private:
     stream &owner;  ///< Owning stream
-    std::promise<void> stopped_promise; ///< Promise filled when last completion handler done
-
-protected:
-    /// Called by last completion handler
-    void stopped();
 
 public:
     explicit reader(stream &owner) : owner(owner) {}
@@ -85,7 +80,7 @@ public:
      * Block until @ref stopped has been called by the last completion
      * handler. This function is called without the mutex held.
      */
-    void join();
+    virtual void join() = 0;
 };
 
 } // namespace recv

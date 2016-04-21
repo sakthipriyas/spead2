@@ -64,6 +64,7 @@ private:
     /// Buffer for asynchronous receive, of size @a max_size + 1.
     std::unique_ptr<std::uint8_t[]> buffer;
 #endif
+    std::promise<void> stopped_promise; ///< Promise filled when last completion handler done
 
     /// Start an asynchronous receive
     void enqueue_receive();
@@ -178,6 +179,7 @@ public:
         std::size_t buffer_size = default_buffer_size);
 
     virtual void stop() override;
+    virtual void join() override;
 };
 
 } // namespace recv

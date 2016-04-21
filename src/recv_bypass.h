@@ -38,6 +38,7 @@
 #include <map>
 #include <cstdint>
 #include <cstddef>
+#include <future>
 #include <boost/asio.hpp>
 #include "recv_stream.h"
 #include "recv_reader.h"
@@ -57,16 +58,47 @@ namespace detail
  * them into streams. This service always runs its own thread, independent of
  * boost::asio. This simplifies implementation, because not all bypass
  * technologies integrate neatly with epoll and similar functions.
- *
- * Instances of this class are reference-counted. A static table maps interface
- * names to weak references, and the per-stream reader holds a strong reference.
  */
 class bypass_service
 {
+    // Prevent copying
+    bypass_service(const bypass_service &) = delete;
+    bypass_service &operator=(const bypass_service &) = delete;
 private:
+    const std::string type;
+    const std::string interface;
     std::map<boost::asio::ip::udp::endpoint, bypass_reader *> readers;
+    bool stopping = false;   ///< Set to true once last reader is removed
+
+    /**
+     * In normal cases this is called immediately after the constructor, but
+     * only once registration data structures have been safely organised.
+     * Once this function returns, you can assume that destruction will be
+     * via stop(). In particular, this function may store a self-reference that
+     * will be dropped by stop().
+     *
+     * This function is called without the mutex held, but with the guarantee
+     * that no other thread has a reference (so the mutex need not be taken
+     * either).
+     */
+    virtual void start() = 0;
+
+    /**
+     * Called when the last reader is removed. This should
+     * (a) immediately make it safe to create a new instance of the
+     *     bypass_service.
+     * (b) either immediately or asynchronously arrange for any resources
+     *     (such as threads) to be released and any internally-held shared_ptr
+     *     references to be dropped.
+     * This function is called with the mutex held.
+     */
+    virtual void stop() = 0;
 
 protected:
+    /**
+     * Mutex protecting @ref readers, @ref stopping, and whatever subclasses
+     * want it to protect.
+     */
     std::mutex mutex;
 
     /**
@@ -78,11 +110,19 @@ protected:
     bool process_packet(const std::uint8_t *data, std::size_t length);
 
 public:
+    bypass_service(const std::string &type, const std::string &interface);
     virtual ~bypass_service();
 
     static std::shared_ptr<bypass_service> get_instance(const std::string &type, const std::string &interface);
 
-    void add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader);
+    /**
+     * Add a reader to the list of readers.
+     *
+     * @retval true if the reader was added successfully
+     * @retval false if the service is stopping
+     * @throw std::invalid_argument if the endpoint is already registered
+     */
+    bool add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader);
     void remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint);
 };
 
@@ -94,6 +134,7 @@ class bypass_reader : public reader
 private:
     std::shared_ptr<detail::bypass_service> service;
     boost::asio::ip::udp::endpoint endpoint;
+    std::future<void> stop_future;
 
     /**
      * Handle a single packet. The point is to the start of the SPEAD packet,
@@ -116,6 +157,7 @@ public:
                   const boost::asio::ip::udp::endpoint &endpoint);
 
     virtual void stop() override;
+    virtual void join() override;
 };
 
 /// Obtain a list of names of compiled-in bypass types.

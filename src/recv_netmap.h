@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2016 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -28,10 +28,12 @@
 #define NETMAP_WITH_LIBS
 #include <cstdint>
 #include <string>
-#include <atomic>
+#include <thread>
+#include <memory>
 #include <boost/asio.hpp>
 #include <net/netmap_user.h>
 #include "recv_bypass.h"
+#include "common_semaphore.h"
 
 namespace spead2
 {
@@ -46,18 +48,31 @@ public:
     void operator()(nm_desc *) const;
 };
 
-class bypass_service_netmap : public bypass_service
+class bypass_service_netmap : public bypass_service, public std::enable_shared_from_this<bypass_service_netmap>
 {
 private:
+    /**
+     * netmap handle. Only the internal thread may access or modify it.
+     */
     std::unique_ptr<nm_desc, nm_desc_destructor> desc;
-    std::atomic<bool> stop;
-    std::future<void> run_future;
+    /**
+     * Semaphore that is put when @ref stop() is called.
+     */
+    semaphore_fd wake;
 
-    void run();
+    /**
+     * Reference to self, owned by the thread. When the thread is live, it is
+     * owned by the thread.
+     */
+    std::shared_ptr<bypass_service_netmap> self;
+    std::thread run_thread;
+    void run();  ///< Thread function
+
+    virtual void start() override;
+    virtual void stop() override;
 
 public:
-    bypass_service_netmap(const std::string &interface);
-    virtual ~bypass_service_netmap() override;
+    bypass_service_netmap(const std::string &type, const std::string &interface);
 };
 
 } // namespace detail

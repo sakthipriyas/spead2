@@ -41,7 +41,6 @@ mem_reader::mem_reader(
         mem_to_stream(get_stream_base(), this->ptr, this->length);
         // There will be no more data, so we can stop the stream immediately.
         get_stream_base().stop_received();
-        stopped();
     });
 }
 

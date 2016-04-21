@@ -247,7 +247,7 @@ void udp_reader::packet_handler(
         enqueue_receive();
     }
     else
-        stopped();
+        stopped_promise.set_value();
 }
 
 void udp_reader::enqueue_receive()
@@ -271,6 +271,11 @@ void udp_reader::stop()
      * path where it is no longer safe to do so.
      */
     socket.close();
+}
+
+void udp_reader::join()
+{
+    stopped_promise.get_future().get();
 }
 
 } // namespace recv

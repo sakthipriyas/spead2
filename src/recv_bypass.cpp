@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <mutex>
+#include <memory>
 #include <arpa/inet.h>
 #include "recv_bypass.h"
 #include "recv_reader.h"
@@ -45,18 +46,88 @@ namespace recv
 namespace detail
 {
 
+/////////////////////////////////////////////////////////////////////////////
+// Registration
+/////////////////////////////////////////////////////////////////////////////
+
+class bypass_service_type
+{
+public:
+    virtual ~bypass_service_type() = default;
+    virtual std::shared_ptr<bypass_service> factory(const std::string &type, const std::string &interface) = 0;
+
+    std::unordered_map<std::string, std::shared_ptr<bypass_service>> services;
+    std::mutex services_mutex;
+};
+
+template<typename T>
+class bypass_service_type_inst : public bypass_service_type
+{
+public:
+    virtual std::shared_ptr<bypass_service> factory(const std::string &type, const std::string &interface) override
+    {
+        return std::make_shared<T>(type, interface);
+    }
+};
+
+static std::unordered_map<std::string, std::shared_ptr<bypass_service_type>> service_types
+{
+#if SPEAD2_USE_NETMAP
+    std::make_pair(std::string("netmap"), std::make_shared<bypass_service_type_inst<bypass_service_netmap>>()),
+#endif
+};
+
+std::shared_ptr<bypass_service> bypass_service::get_instance(const std::string &type, const std::string &interface)
+{
+    auto group = service_types.find(type);
+    if (group == service_types.end())
+    {
+        throw std::invalid_argument("bypass type `" + type + "' not implemented");
+    }
+
+    std::shared_ptr<bypass_service> service;
+    std::lock_guard<std::mutex> lock(group->second->services_mutex);
+    auto pos = group->second->services.find(interface);
+    if (pos == group->second->services.end())
+    {
+        service = group->second->factory(type, interface);
+        group->second->services.emplace(interface, service);
+        service->start();
+    }
+    else
+        service = pos->second;
+    return service;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// bypass_service
+/////////////////////////////////////////////////////////////////////////////
+
+bypass_service::bypass_service(const std::string &type, const std::string &interface)
+    : type(type), interface(interface)
+{
+}
+
 bypass_service::~bypass_service()
 {
     assert(readers.empty());
 }
 
-void bypass_service::add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader)
+bool bypass_service::add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader)
 {
-    if (!endpoint.address().is_v4())
-        throw std::invalid_argument("only IPv4 addresses can be used with bypass");
+    /* Helgrind reports a lock ordering violation related to this lock, because
+     * the stream's mutex is currently held. In all future cases, the service's
+     * mutex is locked before the streams. This can lead to a deadlock, but
+     * only if two readers are added for the same stream. In other cases, the
+     * service won't know about the stream, and hence cannot try to lock it,
+     * until after this lock is released.
+     */
     std::lock_guard<std::mutex> lock(mutex);
+    if (stopping)
+        return false;
     if (!readers.emplace(endpoint, reader).second)
         throw std::invalid_argument("endpoint is already registered");
+    return true;
 }
 
 void bypass_service::remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint)
@@ -66,6 +137,16 @@ void bypass_service::remove_endpoint(const boost::asio::ip::udp::endpoint &endpo
     if (pos == readers.end())
         throw std::invalid_argument("endpoint is not registered");
     readers.erase(pos);
+
+    if (readers.empty())
+    {
+        // Last reader has vanished, so start shutdown
+        auto group = service_types.find(type);
+        std::lock_guard<std::mutex> services_lock(group->second->services_mutex);
+        group->second->services.erase(interface);
+        stopping = true;
+        stop(); // must be called with services_lock still held
+    }
 }
 
 bool bypass_service::process_packet(const std::uint8_t *data, std::size_t length)
@@ -129,7 +210,8 @@ bool bypass_service::process_packet(const std::uint8_t *data, std::size_t length
         }
         if (pos != readers.end())
         {
-            pos->second->process_packet(data + sizeof(header), length - sizeof(header));
+            bypass_reader *reader = pos->second;
+            reader->process_packet(data + sizeof(header), length - sizeof(header));
             return true;
         }
     }
@@ -148,13 +230,26 @@ bypass_reader::bypass_reader(stream &owner,
                              const boost::asio::ip::udp::endpoint &endpoint)
     : reader(owner), endpoint(endpoint)
 {
-    service = detail::bypass_service::get_instance(type, interface);
-    service->add_endpoint(endpoint, this);
+    if (!endpoint.address().is_v4())
+        throw std::invalid_argument("only IPv4 addresses can be used with bypass");
+    while (true)
+    {
+        service = detail::bypass_service::get_instance(type, interface);
+        if (service->add_endpoint(endpoint, this))
+            return;
+    }
 }
 
 void bypass_reader::stop()
 {
-    service->remove_endpoint(endpoint);
+    stop_future = std::async(std::launch::async, [this] {
+        service->remove_endpoint(endpoint);
+    });
+}
+
+void bypass_reader::join()
+{
+    stop_future.get();
 }
 
 void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
@@ -174,69 +269,6 @@ void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
                  size, length);
     }
 }
-
-/////////////////////////////////////////////////////////////////////////////
-// Registration
-/////////////////////////////////////////////////////////////////////////////
-
-namespace detail
-{
-
-class bypass_service_type
-{
-public:
-    virtual ~bypass_service_type() = default;
-    virtual std::shared_ptr<bypass_service> factory(const std::string &interface) = 0;
-
-    std::unordered_map<std::string, std::weak_ptr<bypass_service>> services;
-    std::mutex services_mutex;
-};
-
-template<typename T>
-class bypass_service_type_inst : public bypass_service_type
-{
-public:
-    virtual std::shared_ptr<bypass_service> factory(const std::string &interface) override
-    {
-        return std::make_shared<T>(interface);
-    }
-};
-
-static std::unordered_map<std::string, std::shared_ptr<bypass_service_type>> service_types
-{
-#if SPEAD2_USE_NETMAP
-    std::make_pair(std::string("netmap"), std::make_shared<bypass_service_type_inst<bypass_service_netmap>>()),
-#endif
-};
-
-std::shared_ptr<bypass_service> bypass_service::get_instance(const std::string &type, const std::string &interface)
-{
-    auto inst = service_types.find(type);
-    if (inst == service_types.end())
-    {
-        throw std::invalid_argument("bypass type `" + type + "' not implemented");
-    }
-    std::lock_guard<std::mutex> lock(inst->second->services_mutex);
-    auto service = inst->second->services.find(interface);
-    std::shared_ptr<bypass_service> strong;
-    if (service != inst->second->services.end())
-    {
-        strong = service->second.lock();
-        if (!strong)
-        {
-            strong = inst->second->factory(interface);
-            service->second = strong;
-        }
-    }
-    else
-    {
-        strong = inst->second->factory(interface);
-        inst->second->services[interface] = strong;
-    }
-    return strong;
-}
-
-} // namespace detail
 
 std::vector<std::string> bypass_types()
 {
