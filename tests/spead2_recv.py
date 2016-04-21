@@ -56,6 +56,8 @@ def get_args():
     group.add_argument('--mem-upper', type=int, default=32 * 1024**2, help='Maximum allocation which will use the memory pool [%(default)s]')
     group.add_argument('--mem-max-free', type=int, default=12, help='Maximum free memory buffers [%(default)s]')
     group.add_argument('--mem-initial', type=int, default=8, help='Initial free memory buffers [%(default)s]')
+    group.add_argument("--bypass-type", type=str, default='netmap', help='Kernel bypass mode [%(default)s]')
+    group.add_argument('--bypass-if', type=str, help='Use kernel bypass on this interface [no]')
     return parser.parse_args()
 
 @trollius.coroutine
@@ -103,7 +105,10 @@ def main():
                     text = f.read()
                 stream.add_buffer_reader(text)
             else:
-                stream.add_udp_reader(port, args.packet, args.buffer, args.bind)
+                if args.bypass_if is not None:
+                    stream.add_bypass_reader(args.bypass_type, args.bypass_if, port, args.bind)
+                else:
+                    stream.add_udp_reader(port, args.packet, args.buffer, args.bind)
         return stream
 
     def make_coro(sources):

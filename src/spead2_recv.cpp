@@ -54,9 +54,8 @@ struct options
     std::size_t mem_initial = 8;
     bool ring = false;
     bool memcpy_nt = false;
-#if SPEAD2_USE_NETMAP
-    std::string netmap_if;
-#endif
+    std::string bypass_type = "netmap";
+    std::string bypass_if;
     std::vector<std::string> sources;
 };
 
@@ -103,9 +102,8 @@ static options parse_args(int argc, const char **argv)
         ("mem-initial", make_opt(opts.mem_initial), "Initial free memory buffers")
         ("ring", make_opt(opts.ring), "Use ringbuffer instead of callbacks")
         ("memcpy-nt", make_opt(opts.memcpy_nt), "Use non-temporal memcpy")
-#if SPEAD2_USE_NETMAP
-        ("netmap", make_opt(opts.netmap_if), "Netmap interface")
-#endif
+        ("bypass-type", make_opt(opts.bypass_type), "Kernel bypass mode for --bypass-if")
+        ("bypass-if", make_opt(opts.bypass_if), "Use kernel bypass with this interface")
     ;
 
     hidden.add_options()
@@ -132,12 +130,6 @@ static options parse_args(int argc, const char **argv)
         if (!vm.count("source"))
             throw po::error("At least one port is required");
         opts.sources = vm["source"].as<std::vector<std::string>>();
-#if SPEAD2_USE_NETMAP
-        if (opts.sources.size() > 1 && opts.netmap_if != "")
-        {
-            throw po::error("--netmap cannot be used with multiple sources");
-        }
-#endif
         return opts;
     }
     catch (po::error &e)
@@ -268,14 +260,12 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
         udp::resolver resolver(thread_pool.get_io_service());
         udp::resolver::query query(opts.bind, *i);
         udp::endpoint endpoint = *resolver.resolve(query);
-#if SPEAD2_USE_NETMAP
-        if (opts.netmap_if != "")
+        if (opts.bypass_if != "")
         {
             stream->emplace_reader<spead2::recv::bypass_reader>(
-                "netmap", opts.netmap_if, endpoint);
+                opts.bypass_type, opts.bypass_if, endpoint);
         }
         else
-#endif
         {
             stream->emplace_reader<spead2::recv::udp_reader>(endpoint, opts.packet, opts.buffer);
         }
