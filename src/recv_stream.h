@@ -230,13 +230,17 @@ public:
     template<typename T, typename... Args>
     void emplace_reader(Args&&... args)
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         if (!is_stopped())
         {
             readers.reserve(readers.size() + 1);
             reader *r = new T(*this, std::forward<Args>(args)...);
             std::unique_ptr<reader> ptr(r);
+            std::future<void> start_future = r->start();
             readers.push_back(std::move(ptr));
+            lock.unlock();
+            if (start_future.valid())
+                start_future.get();
         }
     }
 

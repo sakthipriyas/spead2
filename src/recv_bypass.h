@@ -39,9 +39,11 @@
 #include <cstdint>
 #include <cstddef>
 #include <future>
+#include <type_traits>
 #include <boost/asio.hpp>
 #include "recv_stream.h"
 #include "recv_reader.h"
+#include "common_thread_pool.h"
 
 namespace spead2
 {
@@ -50,14 +52,14 @@ namespace recv
 
 class bypass_reader;
 
-namespace detail
-{
-
 /**
  * Base class for the service that reads packets from an interface and inserts
- * them into streams. This service always runs its own thread, independent of
- * boost::asio. This simplifies implementation, because not all bypass
- * technologies integrate neatly with epoll and similar functions.
+ * them into streams. The service should run using boost::asio on the provided
+ * strand, allowing regular breaks in processing. These breaks are required to
+ * register new readers with the service or to expire old ones.
+ *
+ * The user must not destroy a bypass service while any stream that referenced
+ * it still exists.
  */
 class bypass_service
 {
@@ -65,44 +67,19 @@ class bypass_service
     bypass_service(const bypass_service &) = delete;
     bypass_service &operator=(const bypass_service &) = delete;
 private:
-    const std::string type;
-    const std::string interface;
     std::map<boost::asio::ip::udp::endpoint, bypass_reader *> readers;
-    bool stopping = false;   ///< Set to true once last reader is removed
 
-    /**
-     * In normal cases this is called immediately after the constructor, but
-     * only once registration data structures have been safely organised.
-     * Once this function returns, you can assume that destruction will be
-     * via stop(). In particular, this function may store a self-reference that
-     * will be dropped by stop().
-     *
-     * This function is called without the mutex held, but with the guarantee
-     * that no other thread has a reference (so the mutex need not be taken
-     * either).
-     */
-    virtual void start() = 0;
+    void add_endpoint_strand(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader);
+    void remove_endpoint_strand(const boost::asio::ip::udp::endpoint &endpoint);
 
-    /**
-     * Called when the last reader is removed. This should
-     * (a) immediately make it safe to create a new instance of the
-     *     bypass_service.
-     * (b) either immediately or asynchronously arrange for any resources
-     *     (such as threads) to be released and any internally-held shared_ptr
-     *     references to be dropped.
-     * This function is called with the mutex held.
-     */
-    virtual void stop() = 0;
+    template<typename F>
+    std::future<typename std::result_of<F()>::type> run_in_strand(F &&func);
 
 protected:
-    /**
-     * Mutex protecting @ref readers, @ref stopping, and whatever subclasses
-     * want it to protect.
-     */
-    std::mutex mutex;
+    boost::asio::io_service::strand strand;
 
     /**
-     * Process a single packet. The caller must hold the mutex when calling this.
+     * Process a single packet. This must only be called from the strand.
      *
      * @retval true if the packet is consumed
      * @retval false if the packet is not handled and should be passed on to the host stack
@@ -110,29 +87,38 @@ protected:
     bool process_packet(const std::uint8_t *data, std::size_t length);
 
 public:
-    bypass_service(const std::string &type, const std::string &interface);
+    explicit bypass_service(boost::asio::io_service &io_service);
     virtual ~bypass_service();
 
-    static std::shared_ptr<bypass_service> get_instance(const std::string &type, const std::string &interface);
+    /**
+     * Create a bypass service by named type.
+     */
+    static std::unique_ptr<bypass_service> get_instance(
+        boost::asio::io_service &io_service,
+        const std::string &type, const std::string &interface);
+
+    static std::unique_ptr<bypass_service> get_instance(
+        thread_pool &pool,
+        const std::string &type, const std::string &interface);
 
     /**
-     * Add a reader to the list of readers.
-     *
-     * @retval true if the reader was added successfully
-     * @retval false if the service is stopping
-     * @throw std::invalid_argument if the endpoint is already registered
+     * Add a reader to the list of readers, asynchronously. The caller must not
+     * wait for the future while holding a lock that could prevent the strand
+     * from progressing (this includes any stream only).
      */
-    bool add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader);
-    void remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint);
+    std::future<void> add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader);
+    /**
+     * Remove a reader from the list of readers, asynchronously. The same
+     * restrictions as for @ref add_endpoint apply.
+     */
+    std::future<void> remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint);
 };
-
-} // namespace detail
 
 class bypass_reader : public reader
 {
-    friend class detail::bypass_service;
+    friend class bypass_service;
 private:
-    std::shared_ptr<detail::bypass_service> service;
+    bypass_service &service;
     boost::asio::ip::udp::endpoint endpoint;
     std::future<void> stop_future;
 
@@ -147,15 +133,14 @@ public:
      * Constructor.
      *
      * @param owner        Owning stream
-     * @param type         Bypass method e.g. @c netmap
-     * @param interface    Name of the network interface e.g., @c eth0
+     * @param service      Running bypass service
      * @param endpoint     Address on which to listen (IPv4 only)
      */
     bypass_reader(stream &owner,
-                  const std::string &type,
-                  const std::string &interface,
+                  bypass_service &service,
                   const boost::asio::ip::udp::endpoint &endpoint);
 
+    virtual std::future<void> start() override;
     virtual void stop() override;
     virtual void join() override;
 };

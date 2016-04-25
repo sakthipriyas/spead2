@@ -70,6 +70,16 @@ public:
     boost::asio::io_service &get_io_service();
 
     /**
+     * Second phase initialization. In most cases this doesn't need to be
+     * overloaded. It is used where an initialization step needs to happen
+     * without the stream lock held. This function is @em called with the
+     * stream lock held, and should arrange for the initialization to happen
+     * asynchronously. The future it returns will only be waited on once the
+     * stream lock has been dropped.
+     */
+    virtual std::future<void> start() { return std::future<void>(); }
+
+    /**
      * Cancel any pending asynchronous operations. This is called with the
      * owner's mutex held. This function does not need to wait for
      * completion handlers to run.

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cerrno>
 #include <stdexcept>
+#include <future>
 #include <boost/asio.hpp>
 #include <system_error>
 #include <netinet/ip.h>
@@ -31,6 +32,7 @@
 #include "recv_reader.h"
 #include "recv_netmap.h"
 #include "common_logging.h"
+#include "common_thread_pool.h"
 
 namespace spead2
 {
@@ -41,6 +43,9 @@ namespace detail
 
 void nm_desc_destructor::operator()(nm_desc *d) const
 {
+    // We wrap the fd in an asio handle, which takes care of closing it.
+    // To prevent nm_close from closing it too, we nullify it here.
+    d->fd = -1;
     int status = nm_close(d);
     if (status != 0)
     {
@@ -49,66 +54,52 @@ void nm_desc_destructor::operator()(nm_desc *d) const
     }
 }
 
-bypass_service_netmap::bypass_service_netmap(const std::string &type, const std::string &interface)
-    : bypass_service(type, interface),
-    desc(nm_open(("netmap:" + interface + "*").c_str(), NULL, 0, NULL))
+bypass_service_netmap::bypass_service_netmap(boost::asio::io_service &io_service, const std::string &interface)
+    : bypass_service(io_service),
+    desc(nm_open(("netmap:" + interface + "*").c_str(), NULL, 0, NULL)),
+    handle(io_service)
 {
     if (!desc)
         throw std::system_error(errno, std::system_category());
+    handle.assign(desc->fd);
+    enqueue_receive();
 }
 
-void bypass_service_netmap::start()
+bypass_service_netmap::bypass_service_netmap(thread_pool &pool, const std::string &interface)
+    : bypass_service_netmap(pool.get_io_service(), interface)
 {
-    self = shared_from_this();
-    run_thread = std::thread([this] { run(); });
 }
 
-void bypass_service_netmap::stop()
+bypass_service_netmap::~bypass_service_netmap()
 {
-    if (std::this_thread::get_id() == run_thread.get_id())
+    handle.cancel();
+    stopped_promise.get_future().get();
+}
+
+void bypass_service_netmap::enqueue_receive()
+{
+    handle.async_read_some(
+        boost::asio::null_buffers(),
+        strand.wrap([this] (const boost::system::error_code &error, std::size_t bytes_transferred)
+        {
+            receive(error);
+        }));
+}
+
+void bypass_service_netmap::receive(const boost::system::error_code &error)
+{
+    if (error)
     {
-        /* We're killed by a packet we received. Close the
-         * netmap handle now, and the thread code will observe that
-         * and bail out.
-         */
-        desc.reset();
+        if (error == boost::asio::error::operation_aborted)
+        {
+            stopped_promise.set_value();
+            return;
+        }
+        else
+            log_warning("Error waiting for netmap socket: %1%", error.message());
     }
     else
     {
-        /* Outside the thread. We need to ask the thread to stop, then
-         * wait for it to do so. We can't just close the handle ourselves,
-         * because the thread could be using it at any time.
-         */
-        wake.put();
-        run_thread.join();
-        self.reset();
-    }
-}
-
-void bypass_service_netmap::run()
-{
-    struct pollfd fds[2] = {};
-    fds[0].fd = desc->fd;
-    fds[0].events = POLLIN;
-    fds[1].fd = wake.get_fd();
-    fds[1].events = POLLIN;
-    while (true)
-    {
-        int status = poll(fds, 2, -1);
-        if (status < 0)
-        {
-            std::error_code code(status, std::system_category());
-            log_warning("poll failed: %1% (%2%)", code.value(), code.message());
-            continue;
-        }
-        if (fds[1].revents & POLLIN)
-        {
-            // Another thread asked us to stop. It will reset self
-            desc.reset();
-            return;
-        }
-
-        std::unique_lock<std::mutex> lock(mutex);
         for (int ri = desc->first_rx_ring; ri <= desc->last_rx_ring; ri++)
         {
             netmap_ring *ring = NETMAP_RXRING(desc->nifp, ri);
@@ -123,15 +114,6 @@ void bypass_service_netmap::run()
                     && !(slot.flags & NS_MOREFRAG))
                 {
                     used = process_packet(data, slot.len);
-                    if (!desc)
-                    {
-                        // The packet was a stop packet that took out our
-                        // last reader. We need to shut down now, and no-one
-                        // is going to join with us.
-                        run_thread.detach();
-                        self.reset();
-                        return;
-                    }
                 }
                 if (!used)
                     slot.flags |= NS_FORWARD;
@@ -139,6 +121,7 @@ void bypass_service_netmap::run()
             ring->cur = ring->head = ring->tail;
         }
     }
+    enqueue_receive();
 }
 
 } // namespace detail

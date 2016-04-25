@@ -235,7 +235,9 @@ public:
 
 template<typename It>
 static std::unique_ptr<spead2::recv::stream> make_stream(
-    spead2::thread_pool &thread_pool, const options &opts,
+    spead2::thread_pool &thread_pool,
+    spead2::recv::bypass_service *bypass,
+    const options &opts,
     It first_source, It last_source)
 {
     using asio::ip::udp;
@@ -260,10 +262,10 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
         udp::resolver resolver(thread_pool.get_io_service());
         udp::resolver::query query(opts.bind, *i);
         udp::endpoint endpoint = *resolver.resolve(query);
-        if (opts.bypass_if != "")
+        if (bypass)
         {
             stream->emplace_reader<spead2::recv::bypass_reader>(
-                opts.bypass_type, opts.bypass_if, endpoint);
+                *bypass, endpoint);
         }
         else
         {
@@ -278,10 +280,15 @@ int main(int argc, const char **argv)
     options opts = parse_args(argc, argv);
 
     spead2::thread_pool thread_pool(opts.threads);
+    std::unique_ptr<spead2::recv::bypass_service> bypass;
     std::vector<std::unique_ptr<spead2::recv::stream> > streams;
+    if (opts.bypass_if != "")
+    {
+        bypass = spead2::recv::bypass_service::get_instance(thread_pool, opts.bypass_type, opts.bypass_if);
+    }
     if (opts.joint)
     {
-        streams.push_back(make_stream(thread_pool, opts, opts.sources.begin(), opts.sources.end()));
+        streams.push_back(make_stream(thread_pool, bypass.get(), opts, opts.sources.begin(), opts.sources.end()));
     }
     else
     {
@@ -291,7 +298,7 @@ int main(int argc, const char **argv)
             std::exit(2);
         }
         for (auto it = opts.sources.begin(); it != opts.sources.end(); ++it)
-            streams.push_back(make_stream(thread_pool, opts, it, it + 1));
+            streams.push_back(make_stream(thread_pool, bypass.get(), opts, it, it + 1));
     }
 
     std::int64_t n_complete = 0;

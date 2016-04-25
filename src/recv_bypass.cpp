@@ -34,6 +34,7 @@
 #include "recv_packet.h"
 #include "recv_stream.h"
 #include "common_logging.h"
+#include "common_thread_pool.h"
 #if SPEAD2_USE_NETMAP
 # include "recv_netmap.h"
 #endif
@@ -43,68 +44,13 @@ namespace spead2
 {
 namespace recv
 {
-namespace detail
-{
-
-/////////////////////////////////////////////////////////////////////////////
-// Registration
-/////////////////////////////////////////////////////////////////////////////
-
-class bypass_service_type
-{
-public:
-    virtual ~bypass_service_type() = default;
-    virtual std::shared_ptr<bypass_service> factory(const std::string &type, const std::string &interface) = 0;
-
-    std::unordered_map<std::string, std::shared_ptr<bypass_service>> services;
-    std::mutex services_mutex;
-};
-
-template<typename T>
-class bypass_service_type_inst : public bypass_service_type
-{
-public:
-    virtual std::shared_ptr<bypass_service> factory(const std::string &type, const std::string &interface) override
-    {
-        return std::make_shared<T>(type, interface);
-    }
-};
-
-static std::unordered_map<std::string, std::shared_ptr<bypass_service_type>> service_types
-{
-#if SPEAD2_USE_NETMAP
-    std::make_pair(std::string("netmap"), std::make_shared<bypass_service_type_inst<bypass_service_netmap>>()),
-#endif
-};
-
-std::shared_ptr<bypass_service> bypass_service::get_instance(const std::string &type, const std::string &interface)
-{
-    auto group = service_types.find(type);
-    if (group == service_types.end())
-    {
-        throw std::invalid_argument("bypass type `" + type + "' not implemented");
-    }
-
-    std::shared_ptr<bypass_service> service;
-    std::lock_guard<std::mutex> lock(group->second->services_mutex);
-    auto pos = group->second->services.find(interface);
-    if (pos == group->second->services.end())
-    {
-        service = group->second->factory(type, interface);
-        group->second->services.emplace(interface, service);
-        service->start();
-    }
-    else
-        service = pos->second;
-    return service;
-}
 
 /////////////////////////////////////////////////////////////////////////////
 // bypass_service
 /////////////////////////////////////////////////////////////////////////////
 
-bypass_service::bypass_service(const std::string &type, const std::string &interface)
-    : type(type), interface(interface)
+bypass_service::bypass_service(boost::asio::io_service &io_service)
+    : strand(io_service)
 {
 }
 
@@ -113,40 +59,89 @@ bypass_service::~bypass_service()
     assert(readers.empty());
 }
 
-bool bypass_service::add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader)
+namespace
 {
-    /* Helgrind reports a lock ordering violation related to this lock, because
-     * the stream's mutex is currently held. In all future cases, the service's
-     * mutex is locked before the streams. This can lead to a deadlock, but
-     * only if two readers are added for the same stream. In other cases, the
-     * service won't know about the stream, and hence cannot try to lock it,
-     * until after this lock is released.
-     */
-    std::lock_guard<std::mutex> lock(mutex);
-    if (stopping)
-        return false;
-    if (!readers.emplace(endpoint, reader).second)
-        throw std::invalid_argument("endpoint is already registered");
-    return true;
+
+typedef std::function<std::unique_ptr<bypass_service>(boost::asio::io_service &io_service, const std::string &)> make_bypass_service_t;
+
+template<typename T>
+static std::unique_ptr<bypass_service> make_bypass_service(boost::asio::io_service &io_service, const std::string &interface)
+{
+    return std::unique_ptr<bypass_service>(new T(io_service, interface));
 }
 
-void bypass_service::remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint)
+static std::unordered_map<std::string, make_bypass_service_t> types
 {
-    std::lock_guard<std::mutex> lock(mutex);
+#if SPEAD2_USE_NETMAP
+    { std::string("netmap"), make_bypass_service_t(make_bypass_service<detail::bypass_service_netmap>) },
+#endif
+};
+
+} // anonymous namespace
+
+std::unique_ptr<bypass_service> bypass_service::get_instance(
+    boost::asio::io_service &io_service, const std::string &type, const std::string &interface)
+{
+    auto pos = types.find(type);
+    if (pos == types.end())
+        throw std::invalid_argument("bypass type `" + type + "' not implemented");
+    else
+        return pos->second(io_service, interface);
+}
+
+std::unique_ptr<bypass_service> bypass_service::get_instance(
+    thread_pool &pool, const std::string &type, const std::string &interface)
+{
+    return get_instance(pool.get_io_service(), type, interface);
+}
+
+std::vector<std::string> bypass_types()
+{
+    std::vector<std::string> ans;
+    for (const auto &type : types)
+        ans.push_back(type.first);
+    std::sort(ans.begin(), ans.end());
+    return ans;
+}
+
+void bypass_service::add_endpoint_strand(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader)
+{
+    if (!readers.emplace(endpoint, reader).second)
+        throw std::invalid_argument("endpoint is already registered");
+}
+
+void bypass_service::remove_endpoint_strand(const boost::asio::ip::udp::endpoint &endpoint)
+{
     auto pos = readers.find(endpoint);
     if (pos == readers.end())
         throw std::invalid_argument("endpoint is not registered");
     readers.erase(pos);
+}
 
-    if (readers.empty())
-    {
-        // Last reader has vanished, so start shutdown
-        auto group = service_types.find(type);
-        std::lock_guard<std::mutex> services_lock(group->second->services_mutex);
-        group->second->services.erase(interface);
-        stopping = true;
-        stop(); // must be called with services_lock still held
-    }
+template<typename F>
+std::future<typename std::result_of<F()>::type> bypass_service::run_in_strand(F &&func)
+{
+    typedef typename std::result_of<F()>::type return_type;
+    /* The shared_ptr is inconveniently inefficient, but I don't see a way
+     * around it that keeps the promise alive after the current function
+     * returns, and that satisfies the asio requirement that a handler be
+     * CopyConstructible.
+     */
+    std::shared_ptr<std::packaged_task<return_type()>> task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(func));
+    strand.dispatch([task] { (*task)(); });
+    return task->get_future();
+}
+
+std::future<void> bypass_service::add_endpoint(const boost::asio::ip::udp::endpoint &endpoint, bypass_reader *reader)
+{
+    if (!endpoint.address().is_v4())
+        throw std::invalid_argument("only IPv4 addresses can be used with bypass");
+    return run_in_strand([=] { add_endpoint_strand(endpoint, reader); });
+}
+
+std::future<void> bypass_service::remove_endpoint(const boost::asio::ip::udp::endpoint &endpoint)
+{
+    return run_in_strand([=] { remove_endpoint_strand(endpoint); });
 }
 
 bool bypass_service::process_packet(const std::uint8_t *data, std::size_t length)
@@ -218,33 +213,25 @@ bool bypass_service::process_packet(const std::uint8_t *data, std::size_t length
     return false;
 }
 
-} // namespace detail
-
 /////////////////////////////////////////////////////////////////////////////
 // Reader
 /////////////////////////////////////////////////////////////////////////////
 
 bypass_reader::bypass_reader(stream &owner,
-                             const std::string &type,
-                             const std::string &interface,
+                             bypass_service &service,
                              const boost::asio::ip::udp::endpoint &endpoint)
-    : reader(owner), endpoint(endpoint)
+    : reader(owner), service(service), endpoint(endpoint)
 {
-    if (!endpoint.address().is_v4())
-        throw std::invalid_argument("only IPv4 addresses can be used with bypass");
-    while (true)
-    {
-        service = detail::bypass_service::get_instance(type, interface);
-        if (service->add_endpoint(endpoint, this))
-            return;
-    }
+}
+
+std::future<void> bypass_reader::start()
+{
+    return service.add_endpoint(endpoint, this);
 }
 
 void bypass_reader::stop()
 {
-    stop_future = std::async(std::launch::async, [this] {
-        service->remove_endpoint(endpoint);
-    });
+    stop_future = service.remove_endpoint(endpoint);
 }
 
 void bypass_reader::join()
@@ -268,15 +255,6 @@ void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
         log_info("discarding packet due to size mismatch (%1% != %2%)",
                  size, length);
     }
-}
-
-std::vector<std::string> bypass_types()
-{
-    std::vector<std::string> ans;
-    for (const auto &type : detail::service_types)
-        ans.push_back(type.first);
-    std::sort(ans.begin(), ans.end());
-    return ans;
 }
 
 } // namespace recv
