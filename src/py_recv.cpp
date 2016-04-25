@@ -158,6 +158,23 @@ public:
     }
 };
 
+class bypass_service_wrapper : public thread_pool_handle_wrapper
+{
+private:
+    std::unique_ptr<bypass_service> service;
+
+public:
+    bypass_service_wrapper(thread_pool &thread_pool, const std::string &type, const std::string &interface)
+        : service(bypass_service::get_instance(thread_pool, type, interface))
+    {
+    }
+
+    bypass_service &get() const
+    {
+        return *service;
+    }
+};
+
 /**
  * Stream that handles the magic necessary to reflect heaps into
  * Python space and capture the reference to it.
@@ -297,14 +314,13 @@ public:
     }
 
     void add_bypass_reader(
-        const std::string &type,
-        const std::string &interface,
+        bypass_service_wrapper &service,
         std::uint16_t port,
         const std::string &bind_hostname = "")
     {
         release_gil gil;
         auto endpoint = make_endpoint(bind_hostname, port);
-        emplace_reader<bypass_reader>(type, interface, endpoint);
+        emplace_reader<bypass_reader>(service.get(), endpoint);
     }
 
     void stop()
@@ -351,6 +367,10 @@ void register_module()
         .def_readonly("is_immediate", &item_wrapper::is_immediate)
         .def_readonly("immediate_value", &item_wrapper::immediate_value)
         .add_property("value", &item_wrapper::get_value);
+    class_<bypass_service_wrapper, boost::noncopyable>("BypassService",
+            init<thread_pool_wrapper &, const std::string &, const std::string &>(
+                (arg("thread_pool"), arg("type"), arg("interface")))[
+                store_handle_postcall<bypass_service_wrapper, thread_pool_handle_wrapper, &thread_pool_handle_wrapper::thread_pool_handle, 1, 2>()]);
     class_<ring_stream_wrapper, boost::noncopyable>("Stream",
             init<thread_pool_wrapper &, bug_compat_mask, std::size_t, std::size_t>(
                 (arg("thread_pool"), arg("bug_compat") = 0,
@@ -396,10 +416,10 @@ void register_module()
               arg("interface_index") = (unsigned int) 0))
         .def("add_bypass_reader", &ring_stream_wrapper::add_bypass_reader,
              (
-              arg("type"),
-              arg("interface"),
+              arg("service"),
               arg("port"),
-              arg("bind_hostname") = std::string()))
+              arg("bind_hostname") = std::string()),
+             with_custodian_and_ward_postcall<1, 2>())
         .def("stop", &ring_stream_wrapper::stop)
         .add_property("fd", &ring_stream_wrapper::get_fd)
         .def_readonly("DEFAULT_MAX_HEAPS", ring_stream_wrapper::default_max_heaps)

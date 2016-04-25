@@ -92,7 +92,7 @@ Descriptor for {0.name} ({0.id:#x})
             break
 
 def main():
-    def make_stream(sources):
+    def make_stream(bypass, sources):
         bug_compat = spead2.BUG_COMPAT_PYSPEAD_0_5_2 if args.pyspead else 0
         stream = spead2.recv.trollius.Stream(thread_pool, bug_compat, args.heaps, args.ring_heaps)
         if memory_pool is not None:
@@ -105,27 +105,31 @@ def main():
                     text = f.read()
                 stream.add_buffer_reader(text)
             else:
-                if args.bypass_if is not None:
-                    stream.add_bypass_reader(args.bypass_type, args.bypass_if, port, args.bind)
+                if bypass is not None:
+                    stream.add_bypass_reader(bypass, port, args.bind)
                 else:
                     stream.add_udp_reader(port, args.packet, args.buffer, args.bind)
         return stream
 
-    def make_coro(sources):
-        stream = make_stream(sources)
+    def make_coro(bypass, sources):
+        stream = make_stream(bypass, sources)
         return run_stream(stream, sources[0], args)
 
     args = get_args()
     logging.basicConfig(level=getattr(logging, args.log.upper()))
 
     thread_pool = spead2.ThreadPool(args.threads)
+    if args.bypass_if is not None:
+        bypass = spead2.recv.BypassService(thread_pool, args.bypass_type, args.bypass_if)
+    else:
+        bypass = None
     memory_pool = None
     if args.mem_pool:
         memory_pool = spead2.MemoryPool(args.mem_lower, args.mem_upper, args.mem_max_free, args.mem_initial)
     if args.joint:
-        coros = [make_coro(args.source)]
+        coros = [make_coro(bypass, args.source)]
     else:
-        coros = [make_coro([source]) for source in args.source]
+        coros = [make_coro(bypass, [source]) for source in args.source]
     tasks = [trollius.async(x) for x in coros]
     task = trollius.wait(tasks, return_when=trollius.FIRST_EXCEPTION)
     trollius.get_event_loop().run_until_complete(task)
