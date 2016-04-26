@@ -156,6 +156,7 @@ void stream_base::resume()
     {
         if (!heap_ready(std::move(resume_heaps.front())))
             break;
+        resume_heaps.pop();
     }
 }
 
