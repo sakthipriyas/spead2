@@ -290,11 +290,13 @@ void udp_reader::resume_handler()
 void udp_reader::stop()
 {
     /* asio guarantees that closing a socket will cancel any pending
-     * operations on it.
+     * operations on it. If we're paused, then we have no handler
+     * anyway.
      * Don't put any logging here: it could be running in a shutdown
      * path where it is no longer safe to do so.
      */
     socket.close();
+    resume();   // triggers final enqueue_receive if paused
 }
 
 void udp_reader::join()

@@ -58,13 +58,14 @@ void mem_reader::run()
 void mem_reader::enqueue()
 {
     if (get_stream_base().is_stopped())
-    {
         stopped_promise.set_value();
-    }
-    else if (!get_stream_base().is_paused())
-    {
+    else if (!is_paused())
         get_io_service().post([this] { run(); });
-    }
+}
+
+void mem_reader::stop()
+{
+    resume();   // triggers final enqueue if paused
 }
 
 void mem_reader::resume_handler()

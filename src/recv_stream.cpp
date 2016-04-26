@@ -206,7 +206,7 @@ stream::stream(thread_pool &thread_pool, bug_compat_mask bug_compat, std::size_t
 void stream::resume()
 {
     stream_base::resume();
-    if (!is_paused())
+    if (!is_paused() && !is_stopped())
     {
         for (const auto &reader : readers)
             reader->resume();
