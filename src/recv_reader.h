@@ -79,6 +79,9 @@ protected:
      */
     bool is_paused() const;
 
+    /// Set the paused flag
+    void pause();
+
 public:
     explicit reader(stream &owner) : owner(owner) {}
     virtual ~reader() = default;

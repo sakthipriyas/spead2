@@ -31,6 +31,11 @@ bool reader::is_paused() const
     return paused;
 }
 
+void reader::pause()
+{
+    paused = true;
+}
+
 boost::asio::io_service &reader::get_io_service()
 {
     return owner.get_io_service();
