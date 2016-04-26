@@ -55,7 +55,7 @@ udp_reader::udp_reader(
 #if SPEAD2_USE_RECVMMSG
     buffers(mmsg_count), msgvec(mmsg_count)
 #else
-    buffer(max_size + 1)
+    buffer(new std::uint8_t[max_size + 1])
 #endif
 {
     assert(&this->socket.get_io_service() == &get_io_service());
@@ -229,7 +229,7 @@ void udp_reader::process_packets()
     else if (get_stream_base().is_paused())
         pause();
     else
-        process_one_packet(buffer.get(), bytes_transferred);
+        process_one_packet(buffer.get(), length);
 #endif
 }
 
