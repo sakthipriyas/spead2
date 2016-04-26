@@ -326,13 +326,14 @@ static void main_master(int argc, const char **argv)
 class recv_stream : public spead2::recv::stream
 {
 private:
-    virtual void heap_ready(spead2::recv::live_heap &&live) override
+    virtual bool heap_ready(spead2::recv::live_heap &&live) override
     {
         if (live.is_contiguous())
         {
             spead2::recv::heap heap(std::move(live));
             num_heaps++;
         }
+        return true;
     }
 
     virtual void stop_received() override

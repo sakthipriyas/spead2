@@ -199,7 +199,7 @@ private:
     std::int64_t n_complete = 0;
     const options opts;
 
-    virtual void heap_ready(spead2::recv::live_heap &&heap) override
+    virtual bool heap_ready(spead2::recv::live_heap &&heap) override
     {
         if (heap.is_contiguous())
         {
@@ -209,6 +209,7 @@ private:
         }
         else
             std::cout << "Discarding incomplete heap " << heap.get_cnt() << '\n';
+        return true;
     }
 
     std::promise<void> stop_promise;

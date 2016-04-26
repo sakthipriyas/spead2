@@ -53,9 +53,9 @@ udp_reader::udp_reader(
     std::size_t buffer_size)
     : reader(owner), socket(std::move(socket)), max_size(max_size),
 #if SPEAD2_USE_RECVMMSG
-    buffer(mmsg_count), iov(mmsg_count), msgvec(mmsg_count)
+    buffers(mmsg_count), msgvec(mmsg_count)
 #else
-    buffer(new std::uint8_t[max_size + 1])
+    buffer(max_size + 1)
 #endif
 {
     assert(&this->socket.get_io_service() == &get_io_service());
@@ -63,11 +63,11 @@ udp_reader::udp_reader(
     for (std::size_t i = 0; i < mmsg_count; i++)
     {
         // Allocate one extra byte so that overflow can be detected
-        buffer[i].reset(new std::uint8_t[max_size + 1]);
-        iov[i].iov_base = (void *) buffer[i].get();
-        iov[i].iov_len = max_size + 1;
+        buffers[i].data.reset(new std::uint8_t[max_size + 1]);
+        buffers[i].iov.iov_base = (void *) buffers[i].data.get();
+        buffers[i].iov.iov_len = max_size + 1;
         std::memset(&msgvec[i], 0, sizeof(msgvec[i]));
-        msgvec[i].msg_hdr.msg_iov = &iov[i];
+        msgvec[i].msg_hdr.msg_iov = &buffers[i].iov;
         msgvec[i].msg_hdr.msg_iovlen = 1;
     }
 #endif
@@ -179,9 +179,8 @@ udp_reader::udp_reader(
 {
 }
 
-bool udp_reader::process_one_packet(const std::uint8_t *data, std::size_t length)
+void udp_reader::process_one_packet(const std::uint8_t *data, std::size_t length)
 {
-    bool stopped = false;
     if (length <= max_size && length > 0)
     {
         // If it's bigger, the packet might have been truncated
@@ -193,7 +192,6 @@ bool udp_reader::process_one_packet(const std::uint8_t *data, std::size_t length
             if (get_stream_base().is_stopped())
             {
                 log_debug("UDP reader: end of stream detected");
-                stopped = true;
             }
         }
         else if (size != 0)
@@ -204,7 +202,35 @@ bool udp_reader::process_one_packet(const std::uint8_t *data, std::size_t length
     }
     else if (length > max_size)
         log_info("dropped packet due to truncation");
-    return stopped;
+}
+
+void udp_reader::process_packets()
+{
+#if SPEAD2_USE_RECVMMSG
+    while (resume_first < resume_last)
+    {
+        if (get_stream_base().is_stopped())
+        {
+            log_info("UDP reader: discarding packet received after stream stopped");
+            resume_first = resume_last = 0;
+            break;
+        }
+        if (get_stream_base().is_paused())
+        {
+            pause();
+            break;
+        }
+        process_one_packet(buffers[resume_first].data.get(), msgvec[resume_first].msg_len);
+        resume_first++;
+    }
+#else
+    if (get_stream_base().is_stopped())
+        log_info("UDP reader: discarding packet received after stream stopped");
+    else if (get_stream_base().is_paused())
+        pause();
+    else
+        process_one_packet(buffer.get(), bytes_transferred);
+#endif
 }
 
 void udp_reader::packet_handler(
@@ -214,53 +240,51 @@ void udp_reader::packet_handler(
     std::lock_guard<std::mutex> lock(get_stream_mutex());
     if (!error)
     {
-        if (get_stream_base().is_stopped())
-        {
-            log_info("UDP reader: discarding packet received after stream stopped");
-        }
-        else
-        {
 #if SPEAD2_USE_RECVMMSG
-            int received = recvmmsg(socket.native_handle(), msgvec.data(), msgvec.size(),
-                                    MSG_DONTWAIT, nullptr);
-            log_debug("recvmmsg returned %1%", received);
-            if (received == -1)
-            {
-                std::error_code code(errno, std::system_category());
-                log_warning("recvmmsg failed: %1% (%2%)", code.value(), code.message());
-            }
-            for (int i = 0; i < received; i++)
-            {
-                bool stopped = process_one_packet(buffer[i].get(), msgvec[i].msg_len);
-                if (stopped)
-                    break;
-            }
-#else
-            process_one_packet(buffer.get(), bytes_transferred);
-#endif
+        int received = recvmmsg(socket.native_handle(), msgvec.data(), msgvec.size(),
+                                MSG_DONTWAIT, nullptr);
+        log_debug("recvmmsg returned %1%", received);
+        if (received == -1)
+        {
+            std::error_code code(errno, std::system_category());
+            log_warning("recvmmsg failed: %1% (%2%)", code.value(), code.message());
         }
+        resume_first = 0;
+        resume_last = std::max(0, received);
+        process_packets();
+#else
+        length = bytes_transferred;
+        process_packets();
+#endif
     }
     // TODO: log the error if there was one
-
-    if (!get_stream_base().is_stopped())
-    {
-        enqueue_receive();
-    }
-    else
-        stopped_promise.set_value();
+    enqueue_receive();
 }
 
 void udp_reader::enqueue_receive()
 {
     using namespace std::placeholders;
-    socket.async_receive_from(
+
+    if (get_stream_base().is_stopped())
+        stopped_promise.set_value();
+    else if (!is_paused())
+    {
+        socket.async_receive_from(
 #if SPEAD2_USE_RECVMMSG
-        boost::asio::null_buffers(),
+            boost::asio::null_buffers(),
 #else
-        boost::asio::buffer(buffer.get(), max_size + 1),
+            boost::asio::buffer(buffer.get(), max_size + 1),
 #endif
-        endpoint,
-        std::bind(&udp_reader::packet_handler, this, _1, _2));
+            endpoint,
+            std::bind(&udp_reader::packet_handler, this, _1, _2));
+    }
+}
+
+void udp_reader::resume_handler()
+{
+    std::lock_guard<std::mutex> lock(get_stream_mutex());
+    process_packets();
+    enqueue_receive();
 }
 
 void udp_reader::stop()

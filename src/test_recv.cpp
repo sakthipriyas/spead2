@@ -33,7 +33,7 @@ static std::uint64_t n_complete = 0;
 class trivial_stream : public spead2::recv::stream
 {
 private:
-    virtual void heap_ready(spead2::recv::live_heap &&heap) override
+    virtual bool heap_ready(spead2::recv::live_heap &&heap) override
     {
         std::cout << "Got heap " << heap.get_cnt();
         if (heap.is_complete())
@@ -45,6 +45,7 @@ private:
             std::cout << " [contiguous]\n";
         else
             std::cout << " [incomplete]\n";
+        return true;
     }
 
     std::promise<void> stop_promise;

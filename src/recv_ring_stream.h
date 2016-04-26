@@ -21,6 +21,8 @@
 #ifndef SPEAD2_RECV_RING_STREAM
 #define SPEAD2_RECV_RING_STREAM
 
+#include <boost/asio.hpp>
+#include <functional>
 #include "common_ringbuffer.h"
 #include "common_logging.h"
 #include "common_thread_pool.h"
@@ -56,14 +58,21 @@ public:
  *
  * This class is thread-safe.
  */
-template<typename Ringbuffer = ringbuffer<live_heap> >
+template<typename Ringbuffer = ringbuffer<live_heap, semaphore, semaphore_fd> >
 class ring_stream : public ring_stream_base
 {
 private:
     Ringbuffer ready_heaps;
     bool contiguous_only;
+    /**
+     * Duplicate of the file descriptor from the free-space semaphore in the
+     * ring-buffer, suitable for use with asio.
+     */
+    boost::asio::posix::stream_descriptor space_fd_handle;
 
-    virtual void heap_ready(live_heap &&) override;
+    virtual bool heap_ready(live_heap &&) override;
+
+    void resume_handler(const boost::system::error_code &error);
 public:
     /**
      * Constructor.
@@ -120,8 +129,7 @@ public:
     heap try_pop();
 
     virtual void stop_received() override;
-
-    virtual void stop() override;
+    virtual void stop_impl() override;
 
     const Ringbuffer &get_ringbuffer() const { return ready_heaps; }
 };
@@ -133,30 +141,58 @@ ring_stream<Ringbuffer>::ring_stream(
     std::size_t max_heaps,
     std::size_t ring_heaps,
     bool contiguous_only)
-    : ring_stream_base(io_service, bug_compat, max_heaps), ready_heaps(ring_heaps),
-    contiguous_only(contiguous_only)
+    : ring_stream_base(io_service, bug_compat, max_heaps),
+    ready_heaps(ring_heaps),
+    contiguous_only(contiguous_only),
+    space_fd_handle(io_service, dup(ready_heaps.get_space_sem().get_fd()))
 {
 }
 
 template<typename Ringbuffer>
 ring_stream<Ringbuffer>::~ring_stream()
 {
-    /* See the comments in stop() for why this is necessary. Note that even
-     * though stream's destructor calls stop() and stop is virtual, the
-     * nature of destructors means that stream's version of stop is called
-     * there.
+    /* Need to ensure that we call stop_impl while still a ring_stream. If
+     * we leave it to the base class destructor, it is too late and we will
+     * call the base class's stop_impl.
      */
-    ready_heaps.stop();
+    stop();
 }
 
 template<typename Ringbuffer>
-void ring_stream<Ringbuffer>::heap_ready(live_heap &&h)
+void ring_stream<Ringbuffer>::resume_handler(const boost::system::error_code &error)
+{
+    if (error)
+    {
+        // operation_aborted is expected as part of stop
+        if (error != boost::asio::error::operation_aborted)
+        {
+            log_warning("Error waiting for space in ringbuffer: %1%", error.message());
+        }
+    }
+    else
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stream::resume();
+        if (is_stopped() && !is_paused())
+            ready_heaps.stop();
+    }
+}
+
+template<typename Ringbuffer>
+bool ring_stream<Ringbuffer>::heap_ready(live_heap &&h)
 {
     if (!contiguous_only || h.is_contiguous())
     {
         try
         {
-            ready_heaps.push(std::move(h));
+            ready_heaps.try_push(std::move(h));
+        }
+        catch (ringbuffer_full &e)
+        {
+            space_fd_handle.async_read_some(
+                boost::asio::null_buffers(),
+                std::bind(&ring_stream<Ringbuffer>::resume_handler, this, std::placeholders::_1));
+            return false;
         }
         catch (ringbuffer_stopped &e)
         {
@@ -170,6 +206,7 @@ void ring_stream<Ringbuffer>::heap_ready(live_heap &&h)
         log_warning("dropped incomplete heap %d (%d/%d bytes of payload)",
                     h.get_cnt(), h.get_received_length(), h.get_heap_length());
     }
+    return true;
 }
 
 template<typename Ringbuffer>
@@ -210,12 +247,21 @@ void ring_stream<Ringbuffer>::stop_received()
      * deadlock.
      */
     stream::stop_received();
-    ready_heaps.stop();
+    if (!is_paused())
+        ready_heaps.stop();
 }
 
 template<typename Ringbuffer>
-void ring_stream<Ringbuffer>::stop()
+void ring_stream<Ringbuffer>::stop_impl()
 {
+    /* Prevent resume_handler running after we're stopped (more importantly,
+     * after we're destroyed). It would also be correct to call this after
+     * ready_heaps.stop, but this order gives more predictable results: any
+     * heaps that didn't make it into the ring buffer are always discarded
+     * within the stream class, whereas closing it later might cause some of
+     * them to be pushed and discarded within heap_ready.
+     */
+    space_fd_handle.close();
     /* Make sure the ringbuffer is stopped *before* the base implementation
      * takes the mutex. Without this, a heap_ready call could be blocking the
      * strand, waiting for space in the ring buffer. This will call the
@@ -223,7 +269,7 @@ void ring_stream<Ringbuffer>::stop()
      * rest of the shutdown.
      */
     ready_heaps.stop();
-    stream::stop();
+    stream::stop_impl();
 }
 
 } // namespace recv

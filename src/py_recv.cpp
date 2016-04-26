@@ -184,7 +184,7 @@ public:
  * on completion of code scheduled through the thread pool must drop the GIL
  * first.
  */
-class ring_stream_wrapper : public thread_pool_handle_wrapper, public ring_stream<ringbuffer<live_heap, semaphore_gil<semaphore_fd>, semaphore> >
+class ring_stream_wrapper : public thread_pool_handle_wrapper, public ring_stream<ringbuffer<live_heap, semaphore_gil<semaphore_fd>, semaphore_fd> >
 {
 private:
     boost::asio::ip::address make_address(const std::string &hostname)

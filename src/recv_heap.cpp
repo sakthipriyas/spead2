@@ -226,13 +226,13 @@ namespace
 class descriptor_stream : public stream_base
 {
 private:
-    virtual void heap_ready(live_heap &&h) override;
+    virtual bool heap_ready(live_heap &&h) override;
 public:
     using stream_base::stream_base;
     std::vector<descriptor> descriptors;
 };
 
-void descriptor_stream::heap_ready(live_heap &&h)
+bool descriptor_stream::heap_ready(live_heap &&h)
 {
     if (h.is_contiguous())
     {
@@ -243,6 +243,7 @@ void descriptor_stream::heap_ready(live_heap &&h)
         else
             log_info("incomplete descriptor (no ID)");
     }
+    return true;
 }
 
 } // anonymous namespace

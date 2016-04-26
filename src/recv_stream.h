@@ -28,6 +28,7 @@
 #include <mutex>
 #include <atomic>
 #include <type_traits>
+#include <deque>
 #include <boost/asio.hpp>
 #include "recv_live_heap.h"
 #include "recv_reader.h"
@@ -90,6 +91,16 @@ private:
     std::unique_ptr<s_item_pointer_t[]> heap_cnts;
     /// Position of the most recently added heap
     std::size_t head;
+    /**
+     * Emergency queue of heaps that could not be pushed downstream. There
+     * should never be more than two entries (which can happen if a packet
+     * evicts an old heap and is itself a valid heap), so this could probably
+     * be optimised. The exception is that flush() will transfer all heaps
+     * in the storage to that can't be immediately pushed to this deque.
+     *
+     * The stream is paused iff this list is non-empty.
+     */
+    std::deque<live_heap> resume_heaps;
 
     /// Maximum number of live heaps permitted.
     std::size_t max_heaps;
@@ -114,9 +125,19 @@ private:
 
     /**
      * Callback called when a heap is being ejected from the live list.
-     * The heap might or might not be complete.
+     * The heap might or might not be complete. This function should return
+     * true on success and false if it was not ready to consume the heap. If
+     * false is returned, the callee must arrange for @ref resume to be
+     * called once it is possibly ready to consume the heap.
      */
-    virtual void heap_ready(live_heap &&) {}
+    virtual bool heap_ready(live_heap &&) { return true; }
+
+protected:
+    /**
+     * Subclasses must be call this after @ref heap_ready returns false, to
+     * indicate that the consumer might be ready to consume again.
+     */
+    void resume();
 
 public:
     static constexpr std::size_t default_max_heaps = 4;
@@ -159,11 +180,19 @@ public:
     virtual void stop_received();
 
     bool is_stopped() const { return stopped; }
+    bool is_paused() const { return !resume_heaps.empty(); }
 
     bug_compat_mask get_bug_compat() const { return bug_compat; }
 
     /// Flush the collection of live heaps, passing them to @ref heap_ready.
     void flush();
+
+    /**
+     * Throw away contents of @ref resume_heaps. Note that this does not call
+     * @ref resume; this function is only intended for stopping the stream
+     * externally.
+     */
+    void discard_resume_heaps();
 };
 
 /**
@@ -178,11 +207,6 @@ class stream : protected stream_base
     friend class reader;
     friend class bypass_reader;
 private:
-    /**
-     * Serialization of access. It does not apply to @c memcpy and @c pool in
-     * the base class, which have their own serialization.
-     */
-    std::mutex mutex;
     /**
      * io_service provided for readers.
      *
@@ -206,10 +230,23 @@ private:
     stream &operator=(stream_base &&) = delete;
 
 protected:
+    /**
+     * Serialization of access. It does not apply to @c memcpy and @c pool in
+     * the base class, which have their own serialization.
+     */
+    std::mutex mutex;
+
     virtual void stop_received() override;
 
     /// Actual implementation of @ref stop
-    void stop_impl();
+    virtual void stop_impl();
+
+    /**
+     * Subclasses must be call this after @ref heap_ready returns false, to
+     * indicate that the consumer might be ready to consume again. The caller
+     * must hold the mutex.
+     */
+    void resume();
 
 public:
     using stream_base::get_bug_compat;
@@ -249,11 +286,12 @@ public:
      * calling this there should be no more outstanding completion handlers
      * in the thread pool.
      *
-     * In most cases subclasses should override @ref stop_received rather than
-     * this function. However, if @ref heap_ready or @ref stop_received can
-     * block, then this function must be overridden to interrupt the block.
+     * Subclasses should override @ref stop_received if they need to do
+     * handling regardless of whether the stop came from the network or the
+     * application. They should override @ref stop_impl for cleanup only
+     * needed for a stop triggered from the application.
      */
-    virtual void stop();
+    void stop();
 };
 
 /**

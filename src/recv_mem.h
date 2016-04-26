@@ -22,6 +22,7 @@
 #define SPEAD2_RECV_MEM_H
 
 #include <cstdint>
+#include <future>
 #include "recv_reader.h"
 
 namespace spead2
@@ -46,13 +47,19 @@ private:
     const std::uint8_t *ptr;
     /// Length of data
     std::size_t length;
+    /// Promise set when last completion handler done
+    std::promise<void> stopped_promise;
 
+    virtual void resume_handler() override;
+
+    void enqueue();
+    void run();
 public:
     mem_reader(stream &owner,
                const std::uint8_t *ptr, std::size_t length);
 
     virtual void stop() override {}
-    virtual void join() override {}
+    virtual void join() override;
 };
 
 } // namespace recv

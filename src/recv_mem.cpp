@@ -36,12 +36,46 @@ mem_reader::mem_reader(
     : reader(owner), ptr(ptr), length(length)
 {
     assert(ptr != nullptr);
-    get_io_service().post([this] {
-        std::lock_guard<std::mutex> lock(get_stream_mutex());
-        mem_to_stream(get_stream_base(), this->ptr, this->length);
-        // There will be no more data, so we can stop the stream immediately.
-        get_stream_base().stop_received();
-    });
+    enqueue();
+}
+
+void mem_reader::run()
+{
+    std::lock_guard<std::mutex> lock(get_stream_mutex());
+    const std::uint8_t *new_ptr = mem_to_stream(get_stream_base(), ptr, length);
+    length -= new_ptr - ptr;
+    ptr = new_ptr;
+    if (!get_stream_base().is_stopped())
+    {
+        if (get_stream_base().is_paused())
+            pause();
+        else if (length == 0)
+            get_stream_base().stop_received();
+    }
+    enqueue();
+}
+
+void mem_reader::enqueue()
+{
+    if (get_stream_base().is_stopped())
+    {
+        stopped_promise.set_value();
+    }
+    else if (!get_stream_base().is_paused())
+    {
+        get_io_service().post([this] { run(); });
+    }
+}
+
+void mem_reader::resume_handler()
+{
+    std::lock_guard<std::mutex> lock(get_stream_mutex());
+    enqueue();
+}
+
+void mem_reader::join()
+{
+    stopped_promise.get_future().get();
 }
 
 } // namespace recv

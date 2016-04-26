@@ -246,9 +246,16 @@ void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
     if (size == length)
     {
         std::lock_guard<std::mutex> lock(get_stream_mutex());
-        get_stream_base().add_packet(packet);
         if (get_stream_base().is_stopped())
-            log_debug("netmap_udp_reader: end of stream detected");
+            log_info("bypass_reader: dropping packet received after end of stream");
+        else if (get_stream_base().is_paused())
+            log_debug("bypass_reader: discarding packet because the stream is paused");
+        else
+        {
+            get_stream_base().add_packet(packet);
+            if (get_stream_base().is_stopped())
+            log_debug("bypass_reader: end of stream detected");
+        }
     }
     else if (size != 0)
     {

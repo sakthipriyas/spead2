@@ -46,14 +46,22 @@ class stream_base;
 class reader
 {
 private:
-    stream &owner;  ///< Owning stream
+    stream &owner;          ///< Owning stream
+    /**
+     * Set to indicate that the reader has bailed out of its packet processing
+     * when it noticed that the owning stream was paused. This is set by @ref
+     * pause and cleared by @ref resume. It is protected by the stream's mutex.
+     */
+    bool paused = false;
 
-public:
-    explicit reader(stream &owner) : owner(owner) {}
-    virtual ~reader() = default;
-
-    /// Retrieve the wrapped stream
-    stream &get_stream() const { return owner; }
+protected:
+    /**
+     * Called after the stream is paused, to indicate that packet reception
+     * should be restarted. The stream calls @ref resume, which takes care of
+     * checking whether this reader was paused. This will be called without
+     * the stream mutex held, and from the @ref io_service.
+     */
+    virtual void resume_handler() = 0;
 
     /**
      * Retrieve the wrapped stream's base class. This must only be used when
@@ -65,6 +73,18 @@ public:
      * Retrieve the wrapped stream's @c reader_mutex.
      */
     std::mutex &get_stream_mutex() const;
+
+    /**
+     * Check whether the reader has noted the pausing of the stream.
+     */
+    bool is_paused() const;
+
+public:
+    explicit reader(stream &owner) : owner(owner) {}
+    virtual ~reader() = default;
+
+    /// Retrieve the wrapped stream
+    stream &get_stream() const { return owner; }
 
     /// Retrieve the io_service corresponding to the owner
     boost::asio::io_service &get_io_service();
@@ -87,10 +107,18 @@ public:
     virtual void stop() = 0;
 
     /**
-     * Block until @ref stopped has been called by the last completion
-     * handler. This function is called without the mutex held.
+     * Block until the last completion handler has finished.
      */
     virtual void join() = 0;
+
+    /**
+     * Called by the stream when the stream has resumed. Note that if no
+     * packets arrived for this reader after the stream was paused, the
+     * reader might not be paused. This function checks that before posting
+     * a call to @ref resume_handler on the io_service. It is called with
+     * the stream mutex held.
+     */
+    void resume();
 };
 
 } // namespace recv

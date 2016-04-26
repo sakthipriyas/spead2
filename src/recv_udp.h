@@ -54,15 +54,20 @@ private:
     /// Maximum packet size we will accept
     std::size_t max_size;
 #if SPEAD2_USE_RECVMMSG
+    struct packet_buffer
+    {
+        std::unique_ptr<std::uint8_t[]> data;
+        iovec iov;
+    };
     /// Buffer for asynchronous receive, of size @a max_size + 1.
-    std::vector<std::unique_ptr<std::uint8_t[]>> buffer;
-    /// Scatter-gather array for each buffer
-    std::vector<iovec> iov;
+    std::vector<packet_buffer> buffers;
     /// recvmmsg control structures
     std::vector<mmsghdr> msgvec;
+    std::size_t resume_first, resume_last;
 #else
     /// Buffer for asynchronous receive, of size @a max_size + 1.
     std::unique_ptr<std::uint8_t[]> buffer;
+    std::size_t length;
 #endif
     std::promise<void> stopped_promise; ///< Promise filled when last completion handler done
 
@@ -72,14 +77,22 @@ private:
     /**
      * Handle a single received packet.
      *
-     * @return whether the packet caused the stream to stop
+     * @pre The stream is neither stopped nor paused.
      */
-    bool process_one_packet(const std::uint8_t *data, std::size_t length);
+    void process_one_packet(const std::uint8_t *data, std::size_t length);
+
+    /**
+     * Handle multiple packets, stored in the class, until the stream is
+     * stopped or paused.
+     */
+    void process_packets();
 
     /// Callback on completion of asynchronous receive
     void packet_handler(
         const boost::system::error_code &error,
         std::size_t bytes_transferred);
+
+    virtual void resume_handler() override;
 
 public:
     /// Maximum packet size, if none is explicitly passed to the constructor

@@ -128,6 +128,7 @@ private:
      */
     void process_packet(const std::uint8_t *data, std::size_t length);
 
+    virtual void resume_handler() override {}
 public:
     /**
      * Constructor.

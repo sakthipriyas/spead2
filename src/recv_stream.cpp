@@ -26,6 +26,7 @@
 #include "recv_live_heap.h"
 #include "common_memcpy.h"
 #include "common_thread_pool.h"
+#include "common_logging.h"
 
 namespace spead2
 {
@@ -79,7 +80,7 @@ void stream_base::set_memcpy(memcpy_function_id id)
 
 bool stream_base::add_packet(const packet_header &packet)
 {
-    assert(!stopped);
+    assert(!stopped && !is_paused());
     // Look for matching heap. For large heaps, this will in most
     // cases be in the head position.
     live_heap *h = NULL;
@@ -110,7 +111,8 @@ bool stream_base::add_packet(const packet_header &packet)
             h = reinterpret_cast<live_heap *>(&heap_storage[head]);
             if (heap_cnts[head] != -1)
             {
-                heap_ready(std::move(*h));
+                if (!heap_ready(std::move(*h)))
+                    resume_heaps.push_back(std::move(*h));
                 h->~live_heap();
             }
             heap_cnts[head] = heap_cnt;
@@ -134,7 +136,10 @@ bool stream_base::add_packet(const packet_header &packet)
         if (h->is_complete())
         {
             if (!end_of_stream)
-                heap_ready(std::move(*h));
+            {
+                if (!is_paused() && !heap_ready(std::move(*h)))
+                    resume_heaps.push_back(std::move(*h));
+            }
             heap_cnts[position] = -1;
             h->~live_heap();
         }
@@ -143,6 +148,15 @@ bool stream_base::add_packet(const packet_header &packet)
     if (end_of_stream)
         stop_received();
     return result;
+}
+
+void stream_base::resume()
+{
+    while (!resume_heaps.empty())
+    {
+        if (!heap_ready(std::move(resume_heaps.front())))
+            break;
+    }
 }
 
 void stream_base::flush()
@@ -154,10 +168,20 @@ void stream_base::flush()
         if (heap_cnts[head] != -1)
         {
             live_heap *h = reinterpret_cast<live_heap *>(&heap_storage[head]);
-            heap_ready(std::move(*h));
+            if (!is_paused() && !heap_ready(std::move(*h)))
+                resume_heaps.push_back(std::move(*h));
             h->~live_heap();
             heap_cnts[head] = -1;
         }
+    }
+}
+
+void stream_base::discard_resume_heaps()
+{
+    if (!resume_heaps.empty())
+    {
+        log_info("Discarding %1% heaps due to external stop", resume_heaps.size());
+        resume_heaps.clear();
     }
 }
 
@@ -178,6 +202,16 @@ stream::stream(thread_pool &thread_pool, bug_compat_mask bug_compat, std::size_t
 {
 }
 
+void stream::resume()
+{
+    stream_base::resume();
+    if (!is_paused())
+    {
+        for (const auto &reader : readers)
+            reader->resume();
+    }
+}
+
 void stream::stop_received()
 {
     // Check for already stopped, so that readers are stopped exactly once
@@ -193,6 +227,7 @@ void stream::stop_impl()
 {
     std::unique_lock<std::mutex> lock(mutex);
     stop_received();
+    discard_resume_heaps();
 
     /* Block until all readers have entered their final completion handler.
      * Note that this cannot conflict with simultaneous emplace_reader,
@@ -206,7 +241,7 @@ void stream::stop_impl()
     for (const auto &r : readers)
         r->join();
 
-    /* join might return while common_lock is still held by the reader.
+    /* join might return while the lock is still held by the reader.
      * Lock it here to ensure we wait for the reader to complete its
      * critical section.
      */
@@ -227,7 +262,7 @@ stream::~stream()
 
 const std::uint8_t *mem_to_stream(stream_base &s, const std::uint8_t *ptr, std::size_t length)
 {
-    while (length > 0 && !s.is_stopped())
+    while (length > 0 && !s.is_stopped() && !s.is_paused())
     {
         packet_header packet;
         std::size_t size = decode_packet(packet, ptr, length);
