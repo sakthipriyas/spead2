@@ -209,7 +209,7 @@ void stream::resume()
     if (!is_paused() && !is_stopped())
     {
         for (const auto &reader : readers)
-            reader->resume();
+            reader->state_change();
     }
 }
 
@@ -220,7 +220,7 @@ void stream::stop_received()
     {
         stream_base::stop_received();
         for (const auto &reader : readers)
-            reader->stop();
+            reader->state_change();
     }
 }
 

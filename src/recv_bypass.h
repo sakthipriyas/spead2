@@ -123,12 +123,10 @@ private:
     std::future<void> stop_future;
 
     /**
-     * Handle a single packet. The point is to the start of the SPEAD packet,
+     * Handle a single packet. The pointer is to the start of the SPEAD packet,
      * not the L2 headers.
      */
     void process_packet(const std::uint8_t *data, std::size_t length);
-
-    virtual void resume_handler() override {}
 public:
     /**
      * Constructor.
@@ -142,8 +140,8 @@ public:
                   const boost::asio::ip::udp::endpoint &endpoint);
 
     virtual std::future<void> start() override;
-    virtual void stop() override;
     virtual void join() override;
+    virtual void state_change() override;
 };
 
 /// Obtain a list of names of compiled-in bypass types.

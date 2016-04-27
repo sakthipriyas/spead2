@@ -35,11 +35,12 @@ class stream_base;
 
 /**
  * Abstract base class for asynchronously reading data and passing it into
- * a stream. Subclasses will usually override @ref stop.
+ * a stream.
  *
  * The lifecycle of a reader is:
  * - construction (stream mutex held)
- * - stop (stream mutex held)
+ * - start (stream mutex held)
+ * - state_change with stream stopped (stream mutex held)
  * - join (stream mutex not held)
  * - destruction (stream mutex held)
  */
@@ -47,21 +48,15 @@ class reader
 {
 private:
     stream &owner;          ///< Owning stream
-    /**
-     * Set to indicate that the reader has bailed out of its packet processing
-     * when it noticed that the owning stream was paused. This is set by @ref
-     * pause and cleared by @ref resume. It is protected by the stream's mutex.
-     */
-    bool paused = false;
 
 protected:
-    /**
-     * Called after the stream is paused, to indicate that packet reception
-     * should be restarted. The stream calls @ref resume, which takes care of
-     * checking whether this reader was paused. This will be called without
-     * the stream mutex held, and from the @ref io_service.
-     */
-    virtual void resume_handler() = 0;
+    /// Convenience enum for subclasses
+    enum class state_t
+    {
+        RUNNING,      ///< Asynchronous read has been queued
+        PAUSED,       ///< No asynchronous read queued, but not yet stopped; may be ready packets
+        STOPPED       ///< No asynchronous read queued, and stopped promise set
+    };
 
     /**
      * Retrieve the wrapped stream's base class. This must only be used when
@@ -73,14 +68,6 @@ protected:
      * Retrieve the wrapped stream's @c reader_mutex.
      */
     std::mutex &get_stream_mutex() const;
-
-    /**
-     * Check whether the reader has noted the pausing of the stream.
-     */
-    bool is_paused() const;
-
-    /// Set the paused flag
-    void pause();
 
 public:
     explicit reader(stream &owner) : owner(owner) {}
@@ -99,29 +86,33 @@ public:
      * stream lock held, and should arrange for the initialization to happen
      * asynchronously. The future it returns will only be waited on once the
      * stream lock has been dropped.
+     *
+     * It may return an invalid future, in which case no wait occurs.
      */
     virtual std::future<void> start() { return std::future<void>(); }
 
     /**
-     * Cancel any pending asynchronous operations. This is called with the
-     * owner's mutex held. This function does not need to wait for
-     * completion handlers to run.
+     * Notify the reader that the stream may have changed state, either
+     * because it is resumed from pause or because it has stopped. There is
+     * currently no explicit notification of a pause (instead, the packet
+     * handler should check for pause before passing on the packet), but this
+     * may change in future.
+     *
+     * At present, a stop received from the network will not necessarily result
+     * in a call to this function. However, a stop request from the user
+     * (including implicitly via the destructor) guarantees that the reader
+     * will have received a call with the stream stopped.
+     *
+     * Called with the stream lock held.
      */
-    virtual void stop() = 0;
+    virtual void state_change() = 0;
 
     /**
-     * Block until the last completion handler has finished.
+     * Block until the last completion handler has finished. This is
+     * guaranteed to only happen once, and only after a call to
+     * @ref state_change with the stream stopped.
      */
     virtual void join() = 0;
-
-    /**
-     * Called by the stream when the stream has resumed. Note that if no
-     * packets arrived for this reader after the stream was paused, the
-     * reader might not be paused. This function checks that before posting
-     * a call to @ref resume_handler on the io_service. It is called with
-     * the stream mutex held.
-     */
-    void resume();
 };
 
 } // namespace recv

@@ -36,7 +36,7 @@ mem_reader::mem_reader(
     : reader(owner), ptr(ptr), length(length)
 {
     assert(ptr != nullptr);
-    enqueue();
+    update_state();
 }
 
 void mem_reader::run()
@@ -45,6 +45,7 @@ void mem_reader::run()
     const std::uint8_t *new_ptr = mem_to_stream(get_stream_base(), ptr, length);
     length -= new_ptr - ptr;
     ptr = new_ptr;
+    update_state();
     if (!get_stream_base().is_stopped())
     {
         if (get_stream_base().is_paused())
@@ -52,26 +53,35 @@ void mem_reader::run()
         else if (length == 0)
             get_stream_base().stop_received();
     }
-    enqueue();
+    update_state();
 }
 
-void mem_reader::enqueue()
+void mem_reader::update_state()
 {
     if (get_stream_base().is_stopped())
-        stopped_promise.set_value();
-    else if (!is_paused())
+    {
+        if (state != state_t::STOPPED)
+        {
+            state = state_t::STOPPED;
+            stopped_promise.set_value();
+        }
+    }
+    else if (get_stream_base().is_paused())
+    {
+        state = state_t::PAUSED;
+    }
+    else
+    {
+        state = state_t::RUNNING;
         get_io_service().post([this] { run(); });
+    }
 }
 
-void mem_reader::stop()
+void mem_reader::state_change()
 {
-    resume();   // triggers final enqueue if paused
-}
-
-void mem_reader::resume_handler()
-{
-    std::lock_guard<std::mutex> lock(get_stream_mutex());
-    enqueue();
+    // If we're running, update_state will be called by the callback
+    if (state != state_t::RUNNING)
+        update_state();
 }
 
 void mem_reader::join()

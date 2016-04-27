@@ -49,16 +49,16 @@ private:
     std::size_t length;
     /// Promise set when last completion handler done
     std::promise<void> stopped_promise;
+    /// Internal state
+    state_t state = state_t::PAUSED;
 
-    virtual void resume_handler() override;
-
-    void enqueue();
+    void update_state();
     void run();
 public:
     mem_reader(stream &owner,
                const std::uint8_t *ptr, std::size_t length);
 
-    virtual void stop() override;
+    virtual void state_change() override;
     virtual void join() override;
 };
 

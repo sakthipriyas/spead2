@@ -53,23 +53,28 @@ private:
     boost::asio::ip::udp::endpoint endpoint;
     /// Maximum packet size we will accept
     std::size_t max_size;
-#if SPEAD2_USE_RECVMMSG
     struct packet_buffer
     {
         std::unique_ptr<std::uint8_t[]> data;
+#if SPEAD2_USE_RECVMMSG
         iovec iov;
+#else
+        std::size_t length;
+#endif
     };
+#if SPEAD2_USE_RECVMMSG
     /// Buffer for asynchronous receive, of size @a max_size + 1.
     std::vector<packet_buffer> buffers;
     /// recvmmsg control structures
     std::vector<mmsghdr> msgvec;
-    std::size_t resume_first, resume_last;
 #else
-    /// Buffer for asynchronous receive, of size @a max_size + 1.
-    std::unique_ptr<std::uint8_t[]> buffer;
-    std::size_t length;
+    std::array<packet_buffer, 1> buffers;
 #endif
-    std::promise<void> stopped_promise; ///< Promise filled when last completion handler done
+    std::size_t resume_first = 0, resume_last = 0;
+    /// Internal state machine state
+    state_t state = state_t::PAUSED;
+    /// Promise filled on transition to STOPPED
+    std::promise<void> stopped_promise;
 
     /// Start an asynchronous receive
     void enqueue_receive();
@@ -92,7 +97,7 @@ private:
         const boost::system::error_code &error,
         std::size_t bytes_transferred);
 
-    virtual void resume_handler() override;
+    void update_state(bool have_callback);
 
 public:
     /// Maximum packet size, if none is explicitly passed to the constructor
@@ -191,7 +196,7 @@ public:
         std::size_t max_size = default_max_size,
         std::size_t buffer_size = default_buffer_size);
 
-    virtual void stop() override;
+    virtual void state_change() override;
     virtual void join() override;
 };
 

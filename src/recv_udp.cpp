@@ -55,7 +55,7 @@ udp_reader::udp_reader(
 #if SPEAD2_USE_RECVMMSG
     buffers(mmsg_count), msgvec(mmsg_count)
 #else
-    buffer(new std::uint8_t[max_size + 1])
+    buffers{{{new std::uint8_t[max_size + 1], 0}}}
 #endif
 {
     assert(&this->socket.get_io_service() == &get_io_service());
@@ -95,7 +95,7 @@ udp_reader::udp_reader(
         }
     }
     this->socket.bind(endpoint);
-    enqueue_receive();
+    update_state(false);
 }
 
 static boost::asio::ip::udp::socket make_multicast_v4_socket(
@@ -206,7 +206,6 @@ void udp_reader::process_one_packet(const std::uint8_t *data, std::size_t length
 
 void udp_reader::process_packets()
 {
-#if SPEAD2_USE_RECVMMSG
     while (resume_first < resume_last)
     {
         if (get_stream_base().is_stopped())
@@ -215,22 +214,20 @@ void udp_reader::process_packets()
             resume_first = resume_last = 0;
             break;
         }
-        if (get_stream_base().is_paused())
+        else if (get_stream_base().is_paused())
         {
-            pause();
             break;
         }
-        process_one_packet(buffers[resume_first].data.get(), msgvec[resume_first].msg_len);
-        resume_first++;
-    }
+        else
+        {
+#if SPEAD2_USE_RECVMMSG
+            process_one_packet(buffers[resume_first].data.get(), msgvec[resume_first].msg_len);
 #else
-    if (get_stream_base().is_stopped())
-        log_info("UDP reader: discarding packet received after stream stopped");
-    else if (get_stream_base().is_paused())
-        pause();
-    else
-        process_one_packet(buffer.get(), length);
+            process_one_packet(buffers[resume_first].data.get(), buffers[resume_first].length);
 #endif
+            resume_first++;
+        }
+    }
 }
 
 void udp_reader::packet_handler(
@@ -251,52 +248,80 @@ void udp_reader::packet_handler(
         }
         resume_first = 0;
         resume_last = std::max(0, received);
-        process_packets();
 #else
-        length = bytes_transferred;
-        process_packets();
+        resume_first = 0;
+        resume_last = 1;
+        buffers[0].length = bytes_transferred;
 #endif
+        process_packets();
     }
     // TODO: log the error if there was one
-    enqueue_receive();
+    update_state(false);
 }
 
 void udp_reader::enqueue_receive()
 {
     using namespace std::placeholders;
-
-    if (get_stream_base().is_stopped())
-        stopped_promise.set_value();
-    else if (!is_paused())
-    {
-        socket.async_receive_from(
+    socket.async_receive_from(
 #if SPEAD2_USE_RECVMMSG
-            boost::asio::null_buffers(),
+        boost::asio::null_buffers(),
 #else
-            boost::asio::buffer(buffer.get(), max_size + 1),
+        boost::asio::buffer(buffers[0].get(), max_size + 1),
 #endif
-            endpoint,
-            std::bind(&udp_reader::packet_handler, this, _1, _2));
+        endpoint,
+        std::bind(&udp_reader::packet_handler, this, _1, _2));
+}
+
+void udp_reader::update_state(bool have_callback)
+{
+restart:
+    /* Don't put any logging here: it could be running in a shutdown
+     * path where it is no longer safe to do so.
+     */
+    if (have_callback)
+    {
+        /* Transition can only happen when the completion handler runs. Here
+         * we just make sure that happens if we're stopping, by closing the
+         * socket. asio guarantees that this will cancel the pending
+         * operation.
+         */
+        if (get_stream_base().is_stopped())
+            socket.close();
+    }
+    else if (get_stream_base().is_stopped())
+    {
+        if (state != state_t::STOPPED)
+        {
+            state = state_t::STOPPED;
+            stopped_promise.set_value();
+        }
+    }
+    else if (get_stream_base().is_paused())
+    {
+        // This currently can't happen: state_change is only called on stop or
+        // resume.
+        state = state_t::PAUSED;
+    }
+    else
+    {
+        if (resume_first < resume_last)
+        {
+            assert(state == state_t::PAUSED);
+            process_packets();
+            // The state may have changed again, so start from scratch
+            goto restart;
+        }
+        else
+        {
+            state = state_t::RUNNING;
+            enqueue_receive();
+        }
     }
 }
 
-void udp_reader::resume_handler()
+void udp_reader::state_change()
 {
-    std::lock_guard<std::mutex> lock(get_stream_mutex());
-    process_packets();
-    enqueue_receive();
-}
-
-void udp_reader::stop()
-{
-    /* asio guarantees that closing a socket will cancel any pending
-     * operations on it. If we're paused, then we have no handler
-     * anyway.
-     * Don't put any logging here: it could be running in a shutdown
-     * path where it is no longer safe to do so.
-     */
-    socket.close();
-    resume();   // triggers final enqueue_receive if paused
+    update_state(state == state_t::RUNNING);
 }
 
 void udp_reader::join()

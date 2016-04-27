@@ -229,9 +229,10 @@ std::future<void> bypass_reader::start()
     return service.add_endpoint(endpoint, this);
 }
 
-void bypass_reader::stop()
+void bypass_reader::state_change()
 {
-    stop_future = service.remove_endpoint(endpoint);
+    if (!stop_future.valid())
+        stop_future = service.remove_endpoint(endpoint);
 }
 
 void bypass_reader::join()
@@ -254,7 +255,7 @@ void bypass_reader::process_packet(const std::uint8_t *data, std::size_t length)
         {
             get_stream_base().add_packet(packet);
             if (get_stream_base().is_stopped())
-            log_debug("bypass_reader: end of stream detected");
+                log_debug("bypass_reader: end of stream detected");
         }
     }
     else if (size != 0)
