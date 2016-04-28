@@ -32,6 +32,30 @@ def assert_equal_typed(expected, actual, msg=None):
     assert_equal(type(expected), type(actual), msg)
 
 
+class TestParseRangeList(object):
+    def test_empty(self):
+        assert_equal([], spead2.parse_range_list(''))
+
+    def test_simple(self):
+        assert_equal([1, 2, 5], spead2.parse_range_list('1,2,5'))
+
+    def test_ranges(self):
+        assert_equal([100, 4, 5, 6, 8, 10, 12, 13], spead2.parse_range_list('100,4-6,8,10-10,12-13'))
+
+
+class TestThreadPool(object):
+    """Smoke tests for :py:class:`spead2.ThreadPool`. These are very simple
+    tests, because it is not actually possible to check things like the
+    thread affinity."""
+    def test_simple(self):
+        spead2.ThreadPool()
+        spead2.ThreadPool(4)
+
+    def test_affinity(self):
+        spead2.ThreadPool(3, [0, 1])
+        spead2.ThreadPool(1, [1, 0, 2])
+
+
 class TestFlavour(object):
     def test_bad_version(self):
         with assert_raises(ValueError):

@@ -58,6 +58,7 @@ def get_args():
     group.add_argument('--mem-initial', type=int, default=8, help='Initial free memory buffers [%(default)s]')
     group.add_argument("--bypass-type", type=str, default='netmap', help='Kernel bypass mode [%(default)s]')
     group.add_argument('--bypass-if', type=str, help='Use kernel bypass on this interface [no]')
+    group.add_argument('--affinity', type=spead2.parse_range_list, help='List of CPUs to pin threads to [no affinity]')
     return parser.parse_args()
 
 @trollius.coroutine
@@ -118,7 +119,11 @@ def main():
     args = get_args()
     logging.basicConfig(level=getattr(logging, args.log.upper()))
 
-    thread_pool = spead2.ThreadPool(args.threads)
+    if args.affinity is not None and len(args.affinity) > 0:
+        spead2.ThreadPool.set_affinity(args.affinity[0])
+        thread_pool = spead2.ThreadPool(args.threads, args.affinity[1:] + args.affinity[:1])
+    else:
+        thread_pool = spead2.ThreadPool(args.threads)
     if args.bypass_if is not None:
         bypass = spead2.recv.BypassService(thread_pool, args.bypass_type, args.bypass_if)
     else:

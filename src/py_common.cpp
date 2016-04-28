@@ -152,6 +152,23 @@ static py::object int_to_object(long ival)
     return py::object(py::handle<>(obj));
 }
 
+static std::vector<int> list_to_vector_int(py::list list)
+{
+    std::vector<int> vector;
+    vector.reserve(len(list));
+    for (long i = 0; i < len(list); i++)
+    {
+        int value = py::extract<int>(list[i]);
+        vector.push_back(value);
+    }
+    return vector;
+}
+
+thread_pool_wrapper::thread_pool_wrapper(int num_threads, py::list affinity)
+    : thread_pool(num_threads, list_to_vector_int(affinity))
+{
+}
+
 thread_pool_wrapper::~thread_pool_wrapper()
 {
     stop();
@@ -281,13 +298,19 @@ static void register_module()
         .add_property("heap_address_bits", &flavour::get_heap_address_bits)
         .add_property("bug_compat", &flavour::get_bug_compat);
 
-    class_<memory_pool, std::shared_ptr<memory_pool>, boost::noncopyable>(
+    class_<memory_pool_wrapper, std::shared_ptr<memory_pool_wrapper>, boost::noncopyable>(
         "MemoryPool",
         init<std::size_t, std::size_t, std::size_t, std::size_t>(
-            (arg("lower"), arg("upper"), arg("max_free"), arg("initial"))));
+            (arg("lower"), arg("upper"), arg("max_free"), arg("initial"))))
+        .def(init<thread_pool_wrapper &, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t>(
+                (arg("thread_pool"), arg("lower"), arg("upper"), arg("max_free"), arg("initial"), arg("low_water")))[
+                store_handle_postcall<memory_pool_wrapper, thread_pool_handle_wrapper, &thread_pool_handle_wrapper::thread_pool_handle, 1, 2>()]);
 
     class_<thread_pool_wrapper, boost::noncopyable>("ThreadPool", init<int>(
             (arg("threads") = 1)))
+        .def(init<int, py::list>((arg("threads"), arg("affinity"))))
+        .def("set_affinity", &thread_pool_wrapper::set_affinity)
+        .staticmethod("set_affinity")
         .def("stop", &thread_pool_wrapper::stop);
 
     class_<descriptor>("RawDescriptor")
