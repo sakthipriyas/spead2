@@ -55,7 +55,7 @@ udp_reader::udp_reader(
 #if SPEAD2_USE_RECVMMSG
     buffers(mmsg_count), msgvec(mmsg_count)
 #else
-    buffers{{{new std::uint8_t[max_size + 1], 0}}}
+    buffers{}
 #endif
 {
     assert(&this->socket.get_io_service() == &get_io_service());
@@ -70,6 +70,9 @@ udp_reader::udp_reader(
         msgvec[i].msg_hdr.msg_iov = &buffers[i].iov;
         msgvec[i].msg_hdr.msg_iovlen = 1;
     }
+#else
+    buffers[0].data.reset(new std::uint8_t[max_size + 1]);
+    buffers[0].length = 0;
 #endif
 
     if (buffer_size != 0)
@@ -266,7 +269,7 @@ void udp_reader::enqueue_receive()
 #if SPEAD2_USE_RECVMMSG
         boost::asio::null_buffers(),
 #else
-        boost::asio::buffer(buffers[0].get(), max_size + 1),
+        boost::asio::buffer(buffers[0].data.get(), max_size + 1),
 #endif
         endpoint,
         std::bind(&udp_reader::packet_handler, this, _1, _2));
