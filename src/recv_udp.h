@@ -59,6 +59,7 @@ private:
 #if SPEAD2_USE_RECVMMSG
         iovec iov;
 #else
+        // With recvmmsg, the length is stored in msgvec
         std::size_t length;
 #endif
     };
@@ -70,7 +71,10 @@ private:
 #else
     std::array<packet_buffer, 1> buffers;
 #endif
-    std::size_t resume_first = 0, resume_last = 0;
+    /// First packet to reprocess when resuming from pause
+    std::size_t resume_first = 0;
+    /// Total number of packets received (used when resuming from pause)
+    std::size_t resume_last = 0;
     /// Internal state machine state
     state_t state = state_t::PAUSED;
     /// Promise filled on transition to STOPPED
@@ -154,18 +158,14 @@ public:
     /**
      * Constructor with explicit multicast interface index (IPv6 only).
      *
-     * The socket will have @c SO_REUSEADDR set, so that multiple sockets can
-     * all listen to the same multicast stream. If you want to let the
-     * system pick the interface for the multicast subscription, set
-     * @a interface_index to 0, or use the standard constructor.
-     *
      * @param owner        Owning stream
      * @param endpoint     Multicast group and port
      * @param max_size     Maximum packet size that will be accepted.
      * @param buffer_size  Requested socket buffer size.
      * @param interface_index  Address of the interface which should join the group
+     * @throws std::invalid_argument If @a endpoint is not an IPv6 multicast address
      *
-     * @see if_nametoindex(3)
+     * @see @ref make_multicast_socket, if_nametoindex(3)
      */
     udp_reader(
         stream &owner,

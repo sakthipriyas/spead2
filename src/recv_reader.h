@@ -39,9 +39,10 @@ class stream_base;
  *
  * The lifecycle of a reader is:
  * - construction (stream mutex held)
- * - start (stream mutex held)
- * - state_change with stream stopped (stream mutex held)
- * - join (stream mutex not held)
+ * - start
+ * - zero or more calls to state_change while the stream is running
+ * - state_change with stream stopped
+ * - join
  * - destruction (stream mutex held)
  */
 class reader
@@ -59,8 +60,8 @@ protected:
     };
 
     /**
-     * Retrieve the wrapped stream's base class. This must only be used when
-     * the stream's mutex is held.
+     * Retrieve the wrapped stream's base class. The return value must only be
+     * used when the stream's mutex is held.
      */
     stream_base &get_stream_base() const;
 
@@ -101,9 +102,9 @@ public:
      * At present, a stop received from the network will not necessarily result
      * in a call to this function. However, a stop request from the user
      * (including implicitly via the destructor) guarantees that the reader
-     * will have received a call with the stream stopped.
+     * will receive a call with the stream stopped.
      *
-     * Called with the stream lock held.
+     * Called with the stream mutex held.
      */
     virtual void state_change() = 0;
 
@@ -111,6 +112,8 @@ public:
      * Block until the last completion handler has finished. This is
      * guaranteed to only happen once, and only after a call to
      * @ref state_change with the stream stopped.
+     *
+     * Called without the stream mutex held.
      */
     virtual void join() = 0;
 };
