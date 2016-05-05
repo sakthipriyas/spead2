@@ -54,13 +54,12 @@ stream_base::~stream_base()
 
 void stream_base::set_memory_pool(std::shared_ptr<memory_pool> pool)
 {
-    std::lock_guard<std::mutex> lock(pool_mutex);
     this->pool = std::move(pool);
 }
 
 void stream_base::set_memcpy(memcpy_function memcpy)
 {
-    this->memcpy.store(memcpy, std::memory_order_relaxed);
+    this->memcpy = memcpy;
 }
 
 void stream_base::set_memcpy(memcpy_function_id id)
@@ -117,13 +116,8 @@ bool stream_base::add_packet(const packet_header &packet)
             }
             heap_cnts[head] = heap_cnt;
             new (h) live_heap(heap_cnt, bug_compat);
-            std::shared_ptr<memory_pool> pool;
-            {
-                std::lock_guard<std::mutex> lock(pool_mutex);
-                pool = this->pool;
-            }
             h->set_memory_pool(pool);
-            h->set_memcpy(memcpy.load(std::memory_order_relaxed));
+            h->set_memcpy(memcpy);
         }
     }
 
@@ -201,6 +195,24 @@ stream::stream(boost::asio::io_service &io_service, bug_compat_mask bug_compat, 
 stream::stream(thread_pool &thread_pool, bug_compat_mask bug_compat, std::size_t max_heaps)
     : stream(thread_pool.get_io_service(), bug_compat, max_heaps)
 {
+}
+
+void stream::set_memory_pool(std::shared_ptr<memory_pool> pool)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    stream_base::set_memory_pool(pool);
+}
+
+void stream::set_memcpy(memcpy_function memcpy)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    stream_base::set_memcpy(memcpy);
+}
+
+void stream::set_memcpy(memcpy_function_id id)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    stream_base::set_memcpy(id);
 }
 
 void stream::resume()

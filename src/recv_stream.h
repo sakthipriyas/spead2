@@ -26,7 +26,6 @@
 #include <utility>
 #include <functional>
 #include <mutex>
-#include <atomic>
 #include <type_traits>
 #include <deque>
 #include <boost/asio.hpp>
@@ -110,17 +109,9 @@ private:
     bug_compat_mask bug_compat;
 
     /// Function used to copy heap payloads
-    std::atomic<memcpy_function> memcpy{std::memcpy};
+    memcpy_function memcpy = std::memcpy;
 
-    /// Mutex protecting @ref pool
-    std::mutex pool_mutex;
-    /**
-     * Memory pool used by heaps.
-     *
-     * This is protected by pool_mutex. C++11 mandates free @c atomic_load and
-     * @c atomic_store on @c shared_ptr, but GCC 4.8 doesn't implement it. Also
-     * std::atomic<std::shared_ptr<T>> causes undefined symbol errors.
-     */
+    /// Memory pool used by heaps.
     std::shared_ptr<memory_pool> pool;
 
     /**
@@ -251,14 +242,17 @@ protected:
 public:
     using stream_base::get_bug_compat;
     using stream_base::default_max_heaps;
-    using stream_base::set_memory_pool;
-    using stream_base::set_memcpy;
 
     boost::asio::io_service &get_io_service() const { return io_service; }
 
     explicit stream(boost::asio::io_service &service, bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
     explicit stream(thread_pool &pool, bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
     virtual ~stream() override;
+
+    // Override to hold the mutex
+    void set_memory_pool(std::shared_ptr<memory_pool> pool);
+    void set_memcpy(memcpy_function memcpy);
+    void set_memcpy(memcpy_function_id id);
 
     /**
      * Add a new reader by passing its constructor arguments, excluding
