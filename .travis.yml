@@ -23,8 +23,9 @@ install:
 script:
 - |
     set -e -x
-    $PIP_INSTALL -v -e .
-    function timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
-    timeout 5 python -c "import hangup; hangup.foo('')"
+    cd pybind11
+    git checkout v2.2.3
+    git bisect start v2.2.3 f7bc18f
+    git bisect run ../bisect-test.sh
     echo "Done"
     set +e +x
