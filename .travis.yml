@@ -24,6 +24,7 @@ script:
 - |
     set -e -x
     $PIP_INSTALL -v -e .
-    python -c "import hangup; hangup.foo('')"
+    function timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+    timeout 5 python -c "import hangup; hangup.foo('')"
     echo "Done"
     set +e +x
