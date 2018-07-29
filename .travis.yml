@@ -25,7 +25,7 @@ script:
     set -e -x
     builtin cd pybind11
     git checkout f7bc18f
-    git bisect start 1caeb8d f7bc18f
+    git bisect start f7bc18f v2.2.3
     git bisect run ../bisect-test.sh
     echo "Done"
     set +e +x
