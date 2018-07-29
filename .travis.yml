@@ -1,0 +1,29 @@
+language: generic
+matrix:
+    include:
+        - os: osx
+          osx_image: xcode9.4
+
+before_install:
+- |
+    set -e
+    brew update
+    brew upgrade python
+    pyvenv venv
+    source venv/bin/activate
+    set +e
+
+install:
+- |
+    set -e
+    PIP_INSTALL="python -m pip install --user"
+    $PIP_INSTALL -U pip setuptools wheel
+    set +e
+
+script:
+- |
+    set -e -x
+    $PIP_INSTALL -v -e .
+    python -c "import hangup; hangup.foo('')"
+    echo "Done"
+    set +e +x
