@@ -16,7 +16,7 @@ before_install:
 install:
 - |
     set -e
-    PIP_INSTALL="python -m pip install --user"
+    PIP_INSTALL="python -m pip install"
     $PIP_INSTALL -U pip setuptools wheel
     set +e
 
