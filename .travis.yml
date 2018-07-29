@@ -23,7 +23,7 @@ install:
 script:
 - |
     set -e -x
-    cd pybind11
+    builtin cd pybind11
     git checkout v2.2.3
     git bisect start v2.2.3 f7bc18f
     git bisect run ../bisect-test.sh
