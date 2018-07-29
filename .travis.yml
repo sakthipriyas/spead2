@@ -18,6 +18,7 @@ install:
     set -e
     PIP_INSTALL="python -m pip install"
     $PIP_INSTALL -U pip setuptools wheel
+    brew install coreutils
     set +e
 
 script:
