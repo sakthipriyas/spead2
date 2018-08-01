@@ -27,7 +27,7 @@ public:
         int fd = 1;
         try
         {
-            src.attr("fileno");
+            getattr(src, "fileno");
         }
         catch (std::exception)
         {
