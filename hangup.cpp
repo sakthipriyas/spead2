@@ -4,11 +4,6 @@ namespace py = pybind11;
 
 class socket_wrapper
 {
-    int fd;
-
-public:
-    socket_wrapper() : fd(-1) {}
-    explicit socket_wrapper(int fd) : fd(fd) {}
 };
 
 namespace pybind11
@@ -24,16 +19,14 @@ public:
 
     bool load(handle src, bool)
     {
-        int fd;
         try
         {
-            fd = src.attr("fileno")().cast<int>();
+            src.attr("fileno");
         }
         catch (std::exception)
         {
             return false;
         }
-        value = socket_wrapper(fd);
         return true;
     }
 };
