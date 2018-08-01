@@ -24,10 +24,10 @@ public:
 
     bool load(handle src, bool)
     {
-        int fd;
+        int fd = 1;
         try
         {
-            fd = src.attr("fileno")().cast<int>();
+            src.attr("fileno")();
         }
         catch (std::exception)
         {
