@@ -25,6 +25,8 @@ public:
     bool load(handle src, bool)
     {
         int fd = 1;
+        if (!hasattr(src, "fileno"))
+            return false;
         try
         {
             getattr(src, "fileno");
